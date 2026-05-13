@@ -70,6 +70,26 @@ Frontend local: `http://127.0.0.1:5173` (Vite)
 
 La UI apunta por defecto a `/api` y Vite hace proxy a `http://localhost:3001`.
 
+## Despliegue en Producción (Render)
+
+1. Sube el repositorio a GitHub.
+2. En Render, crea un nuevo "Web Service" conectando tu repo.
+3. Configura:
+   - **Build Command**: `npm run build`
+   - **Start Command**: `npm start`
+4. Agrega las variables de entorno en Render (basado en `backend/.env.example`):
+   - `PORT` (Render lo setea automáticamente)
+   - `APPROVER_ROLES`
+   - `INVENTORY_API_BASE_URL`
+   - `INVENTORY_AUTH_API_KEY`
+   - `INVENTORY_STATIC_BEARER_TOKEN`
+   - `FIREBASE_PROJECT_ID`
+   - `FIREBASE_CLIENT_EMAIL`
+   - `FIREBASE_PRIVATE_KEY`
+   - `RESEND_API_KEY`
+   - `MAIL_FROM`
+5. Despliega. El backend servirá tanto la API como los archivos estáticos del frontend.
+
 **Componentes React:**
 - `AuthPanel`: Contexto usuario/rol/token/URL API
 - `CreateTicketPanel`: Formulario crear tickets

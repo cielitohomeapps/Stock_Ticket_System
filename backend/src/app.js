@@ -2,6 +2,7 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const path = require("path");
 const {admin, db} = require("./config/firebase");
 const {
   createTicket,
@@ -39,6 +40,9 @@ const app = express();
 
 app.use(cors({origin: true}));
 app.use(express.json());
+
+// Serve static files from the React app build directory
+app.use(express.static(path.join(__dirname, '../../frontend/dist')));
 
 // ── Auth middleware ──────────────────────────────────────────────────────────
 
@@ -418,6 +422,11 @@ app.put("/api/admin/email-config", requireUser, requireAdmin, async (req, res) =
   } catch (error) {
     return res.status(400).json({error: error.message});
   }
+});
+
+// Catch all handler: send back React's index.html file for client-side routing
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../../frontend/dist/index.html'));
 });
 
 module.exports = {
