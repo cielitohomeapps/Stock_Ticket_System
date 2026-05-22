@@ -12,6 +12,16 @@ const ticketController = require("./controllers/ticketController");
 const inventoryController = require("./controllers/inventoryController");
 const userController = require("./controllers/userController");
 
+// Services
+const {
+  listUsers,
+  createUser,
+  updateUser,
+  deleteUser,
+  getEmailConfig,
+  saveEmailConfig,
+} = require("./services/user.service");
+
 const SUPERADMIN_EMAIL = "sistemasch17@gmail.com";
 const ADMIN_ROLES = ["admin", "superadmin"];
 
