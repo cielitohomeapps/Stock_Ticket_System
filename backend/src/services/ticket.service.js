@@ -1,5 +1,6 @@
 const {db, FieldValue} = require("../config/firebase");
 const {STATUS} = require("./stock.service");
+const {getProductById} = require("./inventory-api.service");
 
 async function createTicket({type, items, assignedUsers, requestedBy, metadata}) {
   if (!["ENTRY", "EXIT"].includes(type)) {
@@ -33,16 +34,56 @@ async function createTicket({type, items, assignedUsers, requestedBy, metadata})
   return {id: ticketRef.id};
 }
 
-async function sendToReview(ticketId, requestedBy) {
+async function sendToReview(ticketId, requestedBy, clientToken) {
   const ticketRef = db.collection("tickets").doc(ticketId);
+
+  // Read ticket first to validate stock (avoid holding firestore transaction while calling external API)
+  const ticketDocSnap = await ticketRef.get();
+  if (!ticketDocSnap.exists) {
+    throw new Error("Ticket no encontrado.");
+  }
+
+  const ticket = ticketDocSnap.data();
+  if (ticket.status !== STATUS.CREATED) {
+    throw new Error("Solo se puede enviar a revision un ticket en estado CREADO.");
+  }
+
+  // For EXIT tickets, validate stock availability before sending to review
+  if (ticket.type === "EXIT") {
+    const items = Array.isArray(ticket.items) ? ticket.items : [];
+    for (const item of items) {
+      const productId = item.productId || item.id || item.sku;
+      const qty = Number(item.qty);
+      if (!productId || !Number.isFinite(qty) || qty <= 0) {
+        throw new Error("Cada item debe incluir productId (o sku legacy) y qty > 0.");
+      }
+
+      try {
+        const detail = await getProductById(productId, clientToken);
+        const product = detail?.data || detail || {};
+        const currentStock = Number(product.stock ?? product.Stock ?? product.cantidad ?? 0);
+
+        if (currentStock < qty) {
+          throw new Error(
+            `Stock insuficiente para producto ${productId}. Disponible: ${currentStock}, solicitado: ${qty}.`,
+          );
+        }
+      } catch (apiError) {
+        throw new Error(
+          `Error validando stock para ${productId}: ${apiError.message}`,
+        );
+      }
+    }
+  }
+
+  // All validations passed — now update status inside a transaction to avoid races
   await db.runTransaction(async (trx) => {
-    const ticketDoc = await trx.get(ticketRef);
-    if (!ticketDoc.exists) {
+    const freshDoc = await trx.get(ticketRef);
+    if (!freshDoc.exists) {
       throw new Error("Ticket no encontrado.");
     }
-
-    const ticket = ticketDoc.data();
-    if (ticket.status !== STATUS.CREATED) {
+    const fresh = freshDoc.data();
+    if (fresh.status !== STATUS.CREATED) {
       throw new Error("Solo se puede enviar a revision un ticket en estado CREADO.");
     }
 

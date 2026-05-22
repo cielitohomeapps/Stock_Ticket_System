@@ -7,16 +7,72 @@ Proyecto con separación Backend/Frontend:
 
 ## Arquitectura
 
-- Backend con Express para exponer endpoints HTTP.
-- Firestore para persistencia de tickets/auditoria.
-- Integracion de API externa de inventario en backend.
-- Notificaciones por correo con Nodemailer.
-- Frontend desacoplado consumiendo el backend por HTTP.
+- **Backend con Express** para exponer endpoints HTTP.
+- **Firestore** para persistencia de tickets/auditoria.
+- **Integracion de API externa de inventario** en backend.
+- **Notificaciones por correo** con Nodemailer y Resend.
+- **Frontend desacoplado** consumiendo el backend por HTTP.
+- **Autenticación** mediante Firebase Auth.
+
+### Arquitectura General
+
+El proyecto sigue una arquitectura cliente-servidor con separación clara entre frontend y backend:
+
+- **Frontend (React + Vite)**: Interfaz de usuario para creación de tickets, administración y historial.
+- **Backend (Node.js + Express)**: API REST que maneja la lógica de negocio, integración con servicios externos y persistencia.
+- **Base de Datos**: Firestore (NoSQL) para tickets, usuarios y auditoría.
+- **Servicios Externos**: API de inventario, servicios de email (Nodemailer, Resend).
+
+### Componentes Principales
+
+#### Backend
+
+- **Servidor (server.js)**: Punto de entrada que inicia el servidor Express.
+- **Aplicación (app.js)**: Configuración de Express, middlewares de autenticación, rutas API.
+- **Configuración (config/firebase.js)**: Inicialización de Firebase Admin SDK y Firestore.
+- **Servicios**:
+  - `ticket.service.js`: Gestión de tickets (crear, aprobar, rechazar, listar).
+  - `stock.service.js`: Movimientos de stock relacionados con tickets.
+  - `inventory-api.service.js`: Integración con API externa de inventario.
+  - `notification.service.js`: Envío de notificaciones por email.
+  - `email.templates.js`: Plantillas de email.
+  - `audit.service.js`: Registro de auditoría.
+  - `document.service.js`: Generación de PDFs y documentos Word.
+  - `user.service.js`: Gestión de usuarios y configuración de email.
+
+#### Frontend
+
+- **App.jsx**: Componente principal que maneja autenticación, navegación y estado global.
+- **Componentes**:
+  - `GoogleAuthPanel.jsx`: Panel de autenticación con Google.
+  - `TicketForm.jsx`: Formulario para crear tickets.
+  - `StepResult.jsx`: Resultado del proceso de ticket.
+  - `AdminPanel.jsx`: Panel de administración para usuarios y tickets.
+  - `HistoryPanel.jsx`: Historial de tickets del usuario.
+  - `Toast.jsx`: Notificaciones en la UI.
+  - Otros componentes auxiliares para pasos y elementos.
+
+### Flujo de Trabajo
+
+1. **Autenticación**: Usuario se autentica via Firebase Auth.
+2. **Creación de Ticket**: Usuario selecciona productos, tipo de ticket (entrada/salida), motivo.
+3. **Envío a Revisión**: Ticket pasa a estado EN_REVISION.
+4. **Aprobación/Rechazo**: Administrador aprueba o rechaza el ticket.
+5. **Movimiento de Stock**: Si aprobado, se actualiza stock via API externa.
+6. **Notificación**: Se envía email a usuarios asignados.
+
+### Tecnologías Utilizadas
+
+- **Backend**: Node.js, Express, Firebase Admin SDK, Firestore, Nodemailer, Resend, PDFKit, Docx.
+- **Frontend**: React, Vite, Firebase Auth.
+- **Base de Datos**: Firestore.
+- **Desarrollo**: Concurrently para ejecutar ambos servicios.
 
 ## Estructura principal
 
 - `backend/` - Servidor Express con lógica de tickets y stock
 - `frontend/` - Aplicación React con Vite
+- `functions/` - (Reservado para futuras funciones de Firebase)
 
 ## Requisitos
 
@@ -47,6 +103,20 @@ Esto levanta backend y frontend al mismo tiempo desde la raiz del proyecto.
 
 - Frontend (Vite): `http://127.0.0.1:5173`
 - Backend (Express): `http://localhost:3001`
+
+## Mejoras Sugeridas
+
+- **TypeScript**: Migrar a TypeScript para mejor type safety en backend y frontend.
+- **Pruebas**: Agregar tests unitarios e integración (Jest, React Testing Library).
+- **Documentación API**: Implementar Swagger/OpenAPI para documentación de endpoints.
+- **Seguridad**: Validación de inputs, rate limiting, sanitización.
+- **Logging**: Mejorar logging con Winston o similar.
+- **Error Handling**: Manejo de errores más robusto y consistente.
+- **CI/CD**: Pipeline de despliegue automatizado.
+- **Monitoreo**: Integración con herramientas de monitoreo (Sentry, etc.).
+- **Base de Datos**: Considerar migración a PostgreSQL si se requiere SQL.
+- **Frontend**: Mejorar estado global con Redux o Context API más estructurado.
+- **Backend**: Separar controladores de servicios para mejor organización.
 
 ### 1) Backend
 

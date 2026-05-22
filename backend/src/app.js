@@ -3,35 +3,14 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
+const swaggerJsdoc = require("swagger-jsdoc");
+const swaggerUi = require("swagger-ui-express");
 const {admin, db} = require("./config/firebase");
-const {
-  createTicket,
-  sendToReview,
-  rejectTicket,
-  markNotified,
-  markNotificationError,
-  getTicket,
-  listTickets,
-  listTicketsByUser,
-} = require("./services/ticket.service");
-const {applyStockMovementForTicket} = require("./services/stock.service");
-const {sendTicketNotification} = require("./services/notification.service");
-const {buildApprovedEmail} = require("./services/email.templates");
-const {addAuditEntry} = require("./services/audit.service");
-const {
-  getProductById,
-  getProductsByArea,
-  getAvailableAreas,
-} = require("./services/inventory-api.service");
-const {generatePdf, generateWord} = require("./services/document.service");
-const {
-  listUsers,
-  createUser,
-  updateUser,
-  deleteUser,
-  getEmailConfig,
-  saveEmailConfig,
-} = require("./services/user.service");
+
+// Controllers
+const ticketController = require("./controllers/ticketController");
+const inventoryController = require("./controllers/inventoryController");
+const userController = require("./controllers/userController");
 
 const SUPERADMIN_EMAIL = "sistemasch17@gmail.com";
 const ADMIN_ROLES = ["admin", "superadmin"];
@@ -43,6 +22,42 @@ app.use(express.json());
 
 // Serve static files from the React app build directory
 app.use(express.static(path.join(__dirname, '../../frontend/dist')));
+
+// Swagger configuration
+const swaggerOptions = {
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "Ticket Automatization API",
+      version: "1.0.0",
+      description: "API for ticket management and inventory automation",
+    },
+    servers: [
+      {
+        url: "http://localhost:3001",
+        description: "Development server",
+      },
+    ],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "JWT",
+        },
+      },
+    },
+    security: [
+      {
+        bearerAuth: [],
+      },
+    ],
+  },
+  apis: ["./src/app.js"], // Path to the API docs
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // ── Auth middleware ──────────────────────────────────────────────────────────
 
@@ -116,169 +131,139 @@ function requireApprover(req, res, next) {
   return next();
 }
 
+/**
+ * @swagger
+ * /api/health:
+ *   get:
+ *     summary: Health check endpoint
+ *     responses:
+ *       200:
+ *         description: Service is healthy
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 service:
+ *                   type: string
+ */
 app.get("/api/health", (_req, res) => {
   res.json({ok: true, service: "ticket-automation-backend"});
 });
 
-app.get("/api/inventory/products/:id", requireUser, async (req, res) => {
-  try {
-    const data = await getProductById(req.params.id, req.authToken);
-    return res.json(data);
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
+/**
+ * @swagger
+ * /api/inventory/products/{id}:
+ *   get:
+ *     summary: Get product by ID
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Product data
+ *       400:
+ *         description: Error
+ */
+app.get("/api/inventory/products/:id", requireUser, inventoryController.getProduct);
 
-app.get("/api/inventory/products", requireUser, async (req, res) => {
-  try {
-    const data = await getProductsByArea(req.query.area, req.authToken);
-    return res.json(data);
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
+/**
+ * @swagger
+ * /api/inventory/products:
+ *   get:
+ *     summary: Get products by area
+ *     parameters:
+ *       - in: query
+ *         name: area
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: List of products
+ *       400:
+ *         description: Error
+ */
+app.get("/api/inventory/products", requireUser, inventoryController.getProducts);
 
-app.get("/api/inventory/areas", requireUser, async (_req, res) => {
-  try {
-    const areas = await getAvailableAreas(_req.authToken);
-    return res.json({areas});
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
+/**
+ * @swagger
+ * /api/inventory/areas:
+ *   get:
+ *     summary: Get available areas
+ *     responses:
+ *       200:
+ *         description: List of areas
+ *       400:
+ *         description: Error
+ */
+app.get("/api/inventory/areas", requireUser, inventoryController.getAreas);
 
-app.get("/api/tickets/:id/download", requireUser, async (req, res) => {
-  const format = (req.query.format || "pdf").toLowerCase();
-  try {
-    const ticket = await getTicket(req.params.id);
-    if (!ticket) return res.status(404).json({error: "Ticket no encontrado"});
+/**
+ * @swagger
+ * /api/tickets/{id}/download:
+ *   get:
+ *     summary: Download ticket document
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: format
+ *         schema:
+ *           type: string
+ *           enum: [pdf, word]
+ *     responses:
+ *       200:
+ *         description: Document file
+ *       404:
+ *         description: Ticket not found
+ */
+app.get("/api/tickets/:id/download", requireUser, ticketController.download);
 
-    if (format === "word") {
-      const buffer = await generateWord(ticket);
-      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-      res.setHeader("Content-Disposition", `attachment; filename="ticket-${ticket.id}.docx"`);
-      return res.send(buffer);
-    }
+/**
+ * @swagger
+ * /api/tickets:
+ *   post:
+ *     summary: Create a new ticket
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               type:
+ *                 type: string
+ *                 enum: [ENTRY, EXIT]
+ *               items:
+ *                 type: array
+ *               assignedUsers:
+ *                 type: array
+ *               metadata:
+ *                 type: object
+ *     responses:
+ *       201:
+ *         description: Ticket created
+ *       400:
+ *         description: Validation error
+ */
+app.post("/api/tickets", requireUser, ticketController.create);
 
-    // default: pdf
-    generatePdf(ticket, res);
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
+app.post("/api/tickets/:id/send-review", requireUser, ticketController.sendToReview);
 
-app.post("/api/tickets", requireUser, async (req, res) => {
-  try {
-    const {type, items, assignedUsers, metadata} = req.body;
-    const ticket = await createTicket({
-      type,
-      items,
-      assignedUsers,
-      metadata,
-      requestedBy: req.user.id,
-    });
+app.post("/api/tickets/:id/review", requireUser, requireApprover, ticketController.review);
 
-    await addAuditEntry(ticket.id, "TICKET_CREATED", req.user.id, {
-      type,
-      itemsCount: items?.length || 0,
-    });
-
-    return res.status(201).json({ticketId: ticket.id});
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
-
-app.post("/api/tickets/:id/send-review", requireUser, async (req, res) => {
-  try {
-    await sendToReview(req.params.id, req.user.id);
-    await addAuditEntry(req.params.id, "TICKET_SENT_TO_REVIEW", req.user.id);
-    return res.json({ok: true, ticketId: req.params.id, status: "EN_REVISION"});
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
-
-app.post("/api/tickets/:id/review", requireUser, requireApprover, async (req, res) => {
-  const ticketId = req.params.id;
-  const {decision, comment} = req.body;
-
-  try {
-    if (!["APPROVE", "REJECT"].includes(decision)) {
-      return res.status(400).json({error: "decision debe ser APPROVE o REJECT"});
-    }
-
-    if (decision === "REJECT") {
-      await rejectTicket(ticketId, req.user.id, comment);
-      await addAuditEntry(ticketId, "TICKET_REJECTED", req.user.id, {comment: comment || ""});
-      return res.json({ok: true, ticketId, status: "RECHAZADO"});
-    }
-
-    await applyStockMovementForTicket(ticketId, req.user.id, req.authToken);
-    await addAuditEntry(ticketId, "STOCK_MOVEMENT_APPLIED", req.user.id);
-
-    const ticket = await getTicket(ticketId);
-    try {
-      await sendTicketNotification({
-        to: ticket.assignedUsers || [],
-        subject: `Ticket ${ticketId} aprobado y stock actualizado`,
-        html: buildApprovedEmail({
-          ticketId,
-          type: ticket.type,
-          area: ticket.metadata?.area,
-          approvedBy: req.user.email || req.user.id,
-          items: ticket.items,
-          status: "Stock actualizado",
-        }),
-      });
-
-      await markNotified(ticketId);
-      await addAuditEntry(ticketId, "TICKET_NOTIFIED", req.user.id, {
-        recipients: ticket.assignedUsers || [],
-      });
-
-      return res.json({ok: true, ticketId, status: "NOTIFICADO"});
-    } catch (notificationError) {
-      await markNotificationError(ticketId, notificationError.message);
-      await addAuditEntry(ticketId, "NOTIFICATION_ERROR", req.user.id, {
-        error: notificationError.message,
-      });
-
-      return res.status(207).json({
-        ok: false,
-        ticketId,
-        status: "STOCK_ACTUALIZADO",
-        warning: "Stock actualizado, pero fallo el envio de correo",
-        notificationError: notificationError.message,
-      });
-    }
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
-
-app.get("/api/tickets/:id", requireUser, async (req, res) => {
-  try {
-    const ticket = await getTicket(req.params.id);
-    if (!ticket) {
-      return res.status(404).json({error: "Ticket no encontrado"});
-    }
-
-    return res.json(ticket);
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
+app.get("/api/tickets/:id", requireUser, ticketController.getById);
 
 // ── /api/my-tickets ───────────────────────────────────────────────────────────
-app.get("/api/my-tickets", requireUser, async (req, res) => {
-  try {
-    const tickets = await listTicketsByUser(req.user.id);
-    return res.json({tickets});
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
+app.get("/api/my-tickets", requireUser, ticketController.getMyTickets);
 
 // ── /api/me ───────────────────────────────────────────────────────────────────
 app.get("/api/me", requireUser, (req, res) => {
@@ -293,74 +278,31 @@ app.get("/api/me", requireUser, (req, res) => {
 });
 
 // ── Admin: tickets ────────────────────────────────────────────────────────────
-app.get("/api/admin/tickets", requireUser, requireAdmin, async (req, res) => {
-  try {
-    const {status, area} = req.query;
-    const tickets = await listTickets({status, area});
-    return res.json({tickets});
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
+/**
+ * @swagger
+ * /api/admin/tickets:
+ *   get:
+ *     summary: Get all tickets (admin)
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: area
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: List of tickets
+ *       403:
+ *         description: Admin access required
+ */
+app.get("/api/admin/tickets", requireUser, requireAdmin, ticketController.getAll);
 
-app.post("/api/admin/tickets/:id/approve", requireUser, requireAdmin, async (req, res) => {
-  const ticketId = req.params.id;
-  try {
-    // Allow approving from CREADO state by auto-advancing to EN_REVISION first
-    const ticket = await getTicket(ticketId);
-    if (!ticket) return res.status(404).json({error: "Ticket no encontrado"});
-    if (ticket.status === "CREADO") {
-      await sendToReview(ticketId, req.user.id);
-    }
+app.post("/api/admin/tickets/:id/approve", requireUser, requireAdmin, ticketController.approve);
 
-    await applyStockMovementForTicket(ticketId, req.user.id, req.authToken);
-    await addAuditEntry(ticketId, "STOCK_MOVEMENT_APPLIED", req.user.id);
-
-    // Re-fetch updated ticket for notification (reuse variable without redeclaring)
-    const updatedTicket = await getTicket(ticketId);
-    const emailConfig = await getEmailConfig();
-    const allRecipients = [
-      ...(updatedTicket.assignedUsers || []),
-      ...(emailConfig.recipients || []),
-    ].filter(Boolean);
-
-    try {
-      if (allRecipients.length > 0) {
-        await sendTicketNotification({
-          to: allRecipients,
-          subject: `Ticket ${ticketId} aprobado`,
-          html: buildApprovedEmail({
-            ticketId,
-            type: updatedTicket.type,
-            area: updatedTicket.metadata?.area,
-            approvedBy: req.user.email,
-            items: updatedTicket.items,
-          }),
-        });
-        await markNotified(ticketId);
-        await addAuditEntry(ticketId, "TICKET_NOTIFIED", req.user.id, {recipients: allRecipients});
-      }
-    } catch (notifErr) {
-      await markNotificationError(ticketId, notifErr.message);
-    }
-
-    return res.json({ok: true, ticketId, status: "NOTIFICADO"});
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
-
-app.post("/api/admin/tickets/:id/reject", requireUser, requireAdmin, async (req, res) => {
-  const ticketId = req.params.id;
-  const {comment} = req.body;
-  try {
-    await rejectTicket(ticketId, req.user.id, comment);
-    await addAuditEntry(ticketId, "TICKET_REJECTED", req.user.id, {comment: comment || ""});
-    return res.json({ok: true, ticketId, status: "RECHAZADO"});
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
+app.post("/api/admin/tickets/:id/reject", requireUser, requireAdmin, ticketController.reject);
 
 // ── Admin: users ──────────────────────────────────────────────────────────────
 app.get("/api/admin/users", requireUser, requireAdmin, async (_req, res) => {
