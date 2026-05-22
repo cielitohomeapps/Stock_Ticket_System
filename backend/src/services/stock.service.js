@@ -101,8 +101,23 @@ async function processInventoryMovements(ticket, clientToken) {
     } else {
       // For EXIT: fetch current stock first to validate sufficiency.
       const detail = await getProductById(item.productId, clientToken);
+      console.log(`[processInventoryMovements] Full API response for ${item.productId}:`, JSON.stringify(detail, null, 2));
+      
       const product = detail?.data || detail || {};
-      const currentStock = Number(product.stock ?? product.Stock ?? product.cantidad ?? 0);
+      console.log(`[processInventoryMovements] Extracted product for ${item.productId}:`, JSON.stringify(product, null, 2));
+      
+      // Try multiple stock field names
+      let currentStock = 0;
+      const stockKeys = ['stock', 'Stock', 'STOCK', 'cantidad', 'Cantidad', 'CANTIDAD', 'existencias', 'Existencias', 'disponible', 'Disponible'];
+      for (const key of stockKeys) {
+        if (product[key] !== undefined && product[key] !== null) {
+          currentStock = Number(product[key]);
+          console.log(`[processInventoryMovements] Found stock in field '${key}': ${currentStock}`);
+          if (currentStock >= 0) break;
+        }
+      }
+      
+      console.log(`[processInventoryMovements] Final stock for ${item.productId}: ${currentStock}, requested: ${item.qty}`);
 
       if (currentStock < item.qty) {
         throw new Error(

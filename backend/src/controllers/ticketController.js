@@ -172,11 +172,23 @@ const ticketController = {
       // Allow approving from CREADO state by auto-advancing to EN_REVISION first
       const ticket = await getTicket(ticketId);
       if (!ticket) return res.status(404).json({error: "Ticket no encontrado"});
+      
       if (ticket.status === "CREADO") {
-        await sendToReview(ticketId, req.user.id, req.authToken);
+        try {
+          await sendToReview(ticketId, req.user.id, req.authToken);
+        } catch (reviewError) {
+          console.error(`[approve] Error en sendToReview para ticket ${ticketId}:`, reviewError.message);
+          return res.status(400).json({error: `No se pudo enviar a revisión: ${reviewError.message}`});
+        }
       }
 
-      await applyStockMovementForTicket(ticketId, req.user.id, req.authToken);
+      try {
+        await applyStockMovementForTicket(ticketId, req.user.id, req.authToken);
+      } catch (stockError) {
+        console.error(`[approve] Error en applyStockMovementForTicket para ticket ${ticketId}:`, stockError.message);
+        return res.status(400).json({error: `Error al aplicar movimiento de stock: ${stockError.message}`});
+      }
+      
       await addAuditEntry(ticketId, "STOCK_MOVEMENT_APPLIED", req.user.id);
 
       // Re-fetch updated ticket for notification (reuse variable without redeclaring)
@@ -204,11 +216,13 @@ const ticketController = {
           await addAuditEntry(ticketId, "TICKET_NOTIFIED", req.user.id, {recipients: allRecipients});
         }
       } catch (notifErr) {
+        console.error(`[approve] Error en notificación para ticket ${ticketId}:`, notifErr.message);
         await markNotificationError(ticketId, notifErr.message);
       }
 
       return res.json({ok: true, ticketId, status: "NOTIFICADO"});
     } catch (error) {
+      console.error(`[approve] Error inesperado para ticket ${ticketId}:`, error);
       return res.status(400).json({error: error.message});
     }
   },

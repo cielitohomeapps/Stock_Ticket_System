@@ -60,8 +60,23 @@ async function sendToReview(ticketId, requestedBy, clientToken) {
 
       try {
         const detail = await getProductById(productId, clientToken);
+        console.log(`[sendToReview] Full API response for ${productId}:`, JSON.stringify(detail, null, 2));
+        
         const product = detail?.data || detail || {};
-        const currentStock = Number(product.stock ?? product.Stock ?? product.cantidad ?? 0);
+        console.log(`[sendToReview] Extracted product for ${productId}:`, JSON.stringify(product, null, 2));
+        
+        // Try multiple stock field names
+        let currentStock = 0;
+        const stockKeys = ['stock', 'Stock', 'STOCK', 'cantidad', 'Cantidad', 'CANTIDAD', 'existencias', 'Existencias', 'disponible', 'Disponible'];
+        for (const key of stockKeys) {
+          if (product[key] !== undefined && product[key] !== null) {
+            currentStock = Number(product[key]);
+            console.log(`[sendToReview] Found stock in field '${key}': ${currentStock}`);
+            if (currentStock >= 0) break;
+          }
+        }
+        
+        console.log(`[sendToReview] Final stock for ${productId}: ${currentStock}, requested: ${qty}`);
 
         if (currentStock < qty) {
           throw new Error(
