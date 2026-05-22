@@ -193,10 +193,18 @@ const ticketController = {
 
       // Re-fetch updated ticket for notification (reuse variable without redeclaring)
       const updatedTicket = await getTicket(ticketId);
-      const emailConfig = await getEmailConfig();
+      
+      let emailConfig = {};
+      try {
+        emailConfig = await getEmailConfig();
+      } catch (emailConfigError) {
+        console.error(`[approve] Error obteniendo email config para ticket ${ticketId}:`, emailConfigError.message);
+        // Continue without email config — notifications are non-critical
+      }
+      
       const allRecipients = [
         ...(updatedTicket.assignedUsers || []),
-        ...(emailConfig.recipients || []),
+        ...(emailConfig?.recipients || []),
       ].filter(Boolean);
 
       try {

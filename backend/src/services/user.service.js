@@ -73,11 +73,17 @@ async function deleteUser(uid) {
 }
 
 async function getEmailConfig() {
-  const snap = await db.collection("config").doc("emails").get();
-  if (!snap.exists) {
+  try {
+    const snap = await db.collection("config").doc("emails").get();
+    if (!snap.exists) {
+      console.log("[getEmailConfig] Config doc does not exist, returning defaults");
+      return {recipients: [], ccRecipients: [], fromName: "Cielito Home"};
+    }
+    return snap.data();
+  } catch (err) {
+    console.error("[getEmailConfig] Error fetching from Firestore:", err.message);
     return {recipients: [], ccRecipients: [], fromName: "Cielito Home"};
   }
-  return snap.data();
 }
 
 async function saveEmailConfig({recipients, ccRecipients, fromName}) {
