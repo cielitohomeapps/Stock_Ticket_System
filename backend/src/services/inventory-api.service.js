@@ -39,9 +39,9 @@ async function fetchJsonWithTimeout(url, options = {}) {
   }
 }
 
-async function getServiceToken() {
+async function getServiceToken({forceRefreshStatic = false} = {}) {
   const staticToken = (process.env.INVENTORY_STATIC_BEARER_TOKEN || "").trim();
-  if (staticToken) {
+  if (staticToken && !forceRefreshStatic) {
     return staticToken;
   }
 
@@ -123,15 +123,33 @@ async function callInventoryApi({path, method = "GET", body, clientToken}) {
     }
 
     if (!isInvalidTokenError(clientAttempt.payload, clientAttempt.response.status)) {
-      throw new Error(normalizeMessage(clientAttempt.payload, clientAttempt.response.status));
+      const message = normalizeMessage(clientAttempt.payload, clientAttempt.response.status);
+      console.error(`[inventory-api] Client token request failed for ${path}:`, clientAttempt.response.status, message, clientAttempt.payload);
+      throw new Error(message);
     }
+    console.warn(`[inventory-api] Client token invalid for ${path}, falling back to service token.`, clientAttempt.response.status, clientAttempt.payload);
   }
 
-  const fallbackToken = await getServiceToken();
-  const fallbackAttempt = await requestWithToken(fallbackToken);
+  let fallbackToken = await getServiceToken();
+  let fallbackAttempt = await requestWithToken(fallbackToken);
+
+  const staticToken = (process.env.INVENTORY_STATIC_BEARER_TOKEN || "").trim();
+  if (staticToken && fallbackAttempt.response.status >= 400 && isInvalidTokenError(fallbackAttempt.payload, fallbackAttempt.response.status)) {
+    console.warn(`[inventory-api] Static service token invalid for ${path}, generating dynamic token.`);
+    fallbackToken = await getServiceToken({forceRefreshStatic: true});
+    fallbackAttempt = await requestWithToken(fallbackToken);
+  }
 
   if (!fallbackAttempt.response.ok || fallbackAttempt.payload?.success === false) {
+    const rawText = fallbackAttempt.payload && typeof fallbackAttempt.payload === 'object'
+      ? JSON.stringify(fallbackAttempt.payload)
+      : String(fallbackAttempt.payload);
     const message = normalizeMessage(fallbackAttempt.payload, fallbackAttempt.response.status);
+    console.error(`[inventory-api] Service token request failed for ${path}:`, {
+      status: fallbackAttempt.response.status,
+      message,
+      payload: rawText,
+    });
     const normalized = message
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
@@ -219,11 +237,13 @@ async function getAvailableAreas(clientToken) {
   return Array.from(areaSet).sort((a, b) => a.localeCompare(b, "es"));
 }
 
-async function discountProduct(productId, qty, clientToken) {
+async function discountProduct(productId, qty, reason, clientToken) {
+  const body = {cantidad: qty};
+  if (reason) body.motivo = reason;
   return callInventoryApi({
     path: `/productos/${productId}/descontar`,
     method: "POST",
-    body: {cantidad: qty},
+    body,
     clientToken,
   });
 }

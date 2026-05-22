@@ -126,7 +126,12 @@ async function processInventoryMovements(ticket, clientToken) {
         );
       }
       // The /descontar endpoint subtracts the given qty from existing stock.
-      apiResult = await discountProduct(item.productId, item.qty, clientToken);
+      apiResult = await discountProduct(
+          item.productId,
+          item.qty,
+          item.reason || ticket.metadata?.motivo,
+          clientToken,
+      );
     }
 
     movementResults.push({
