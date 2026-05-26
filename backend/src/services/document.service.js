@@ -48,6 +48,7 @@ function formatDate(ts) {
   return d.toLocaleString("es-MX", {
     day: "2-digit", month: "2-digit", year: "numeric",
     hour: "2-digit", minute: "2-digit",
+    timeZone: "America/Mexico_City",
   });
 }
 
@@ -244,7 +245,7 @@ function generatePdf(ticket, res) {
   doc.rect(0, H - 44, W, 44).fill(C.green);
   doc.fillColor(C.greenLight).font("Helvetica").fontSize(9)
       .text(
-          `Generado el ${new Date().toLocaleString("es-MX")} · Cielito Home · Sistema de Tickets`,
+          `Generado el ${new Date().toLocaleString("es-MX", { timeZone: "America/Mexico_City" })} · Cielito Home · Sistema de Tickets`,
           M, H - 24, {width: CW, align: "center", lineBreak: false},
       );
 
@@ -451,7 +452,7 @@ async function generateWord(ticket) {
   // ── Footer paragraph ──────────────────────────────────────────────────────
   const footer = para(
       run(
-          `Generado el ${new Date().toLocaleString("es-MX")} · Cielito Home · Sistema de Tickets`,
+          `Generado el ${new Date().toLocaleString("es-MX", { timeZone: "America/Mexico_City" })} · Cielito Home · Sistema de Tickets`,
           {size: 16, color: D.textMuted},
       ),
       {align: AlignmentType.CENTER, before: 200},
