@@ -1,6 +1,34 @@
 const {db, FieldValue} = require("../config/firebase");
 const {STATUS} = require("./stock.service");
 const {getProductById} = require("./inventory-api.service");
+const {ensureLocationRecord} = require("./location.service");
+
+function serializeFirestoreTimestamp(value) {
+  if (!value) return null
+  if (typeof value === 'string') return value
+  if (value?.toDate && typeof value.toDate === 'function') return value.toDate().toISOString()
+  if (typeof value === 'object' && value._seconds != null && value._nanoseconds != null) {
+    return new Date(value._seconds * 1000 + Math.floor(value._nanoseconds / 1e6)).toISOString()
+  }
+  return null
+}
+
+function serializeTicketData(data) {
+  if (!data || typeof data !== 'object') return data
+  return {
+    ...data,
+    createdAt: serializeFirestoreTimestamp(data.createdAt),
+    updatedAt: serializeFirestoreTimestamp(data.updatedAt),
+  }
+}
+
+function serializeTicketDoc(doc) {
+  if (!doc || typeof doc.data !== 'function') return null
+  return {
+    id: doc.id,
+    ...serializeTicketData(doc.data()),
+  }
+}
 
 async function createTicket({type, items, assignedUsers, requestedBy, metadata}) {
   if (!["ENTRY", "EXIT"].includes(type)) {
@@ -19,6 +47,15 @@ async function createTicket({type, items, assignedUsers, requestedBy, metadata})
     }
   }
 
+  const safeMetadata = {...(metadata || {})};
+
+  // Preserve the inventory API area as provided by the frontend.
+  // Only canonicalize destino into ubicaciones.
+  if (safeMetadata.destino) {
+    const destinoRecord = await ensureLocationRecord(safeMetadata.destino);
+    safeMetadata.destino = destinoRecord.name || safeMetadata.destino;
+  }
+
   const ticketRef = db.collection("tickets").doc();
   await ticketRef.set({
     type,
@@ -26,7 +63,7 @@ async function createTicket({type, items, assignedUsers, requestedBy, metadata})
     items,
     assignedUsers: Array.isArray(assignedUsers) ? assignedUsers : [],
     requestedBy,
-    metadata: metadata || {},
+    metadata: safeMetadata,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
@@ -157,7 +194,7 @@ async function getTicket(ticketId) {
     return null;
   }
 
-  return {id: doc.id, ...doc.data()};
+  return serializeTicketDoc(doc);
 }
 
 async function listTickets({status, area, limitCount = 100} = {}) {
@@ -172,15 +209,7 @@ async function listTickets({status, area, limitCount = 100} = {}) {
   }
 
   const snapshot = await query.get();
-  const tickets = snapshot.docs.map((d) => {
-    const data = d.data();
-    return {
-      id: d.id,
-      ...data,
-      createdAt: data.createdAt?.toDate?.()?.toISOString() ?? null,
-      updatedAt: data.updatedAt?.toDate?.()?.toISOString() ?? null,
-    };
-  });
+  const tickets = snapshot.docs.map((d) => serializeTicketDoc(d));
 
   // Sort descending by createdAt in memory
   tickets.sort((a, b) => {
@@ -216,15 +245,7 @@ async function listTicketsByUser(userId, limitCount = 50) {
     .limit(limitCount)
     .get();
 
-  const tickets = snapshot.docs.map((d) => {
-    const data = d.data();
-    return {
-      id: d.id,
-      ...data,
-      createdAt: data.createdAt?.toDate?.()?.toISOString() ?? null,
-      updatedAt: data.updatedAt?.toDate?.()?.toISOString() ?? null,
-    };
-  });
+  const tickets = snapshot.docs.map((d) => serializeTicketDoc(d));
 
   tickets.sort((a, b) => {
     const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;

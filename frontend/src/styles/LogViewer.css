@@ -1,0 +1,226 @@
+/**
+ * LogViewer component styling.
+ * Virtual scroll list with severity-based colors.
+ */
+
+.log-viewer {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background-color: #ffffff;
+  overflow: hidden;
+}
+
+.log-viewer__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e5e7eb;
+  background-color: #f9fafb;
+}
+
+.log-viewer__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.log-viewer__filters {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.log-viewer__filter-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background-color 0.2s ease;
+  user-select: none;
+}
+
+.log-viewer__filter-label input {
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+}
+
+.log-viewer__filter-label--error {
+  color: #dc2626;
+}
+
+.log-viewer__filter-label--error:hover {
+  background-color: rgba(220, 38, 38, 0.1);
+}
+
+.log-viewer__filter-label--warn {
+  color: #d97706;
+}
+
+.log-viewer__filter-label--warn:hover {
+  background-color: rgba(217, 119, 6, 0.1);
+}
+
+.log-viewer__filter-label--info {
+  color: #2563eb;
+}
+
+.log-viewer__filter-label--info:hover {
+  background-color: rgba(37, 99, 235, 0.1);
+}
+
+.log-viewer__list {
+  flex: 1;
+  overflow-y: auto !important;
+}
+
+.log-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 16px;
+  border-bottom: 1px solid #f3f4f6;
+  font-family: 'Menlo', 'Monaco', monospace;
+  font-size: 12px;
+  background-color: #ffffff;
+}
+
+.log-row:hover {
+  background-color: #f9fafb;
+}
+
+.log-row--error {
+  background-color: #fef2f2;
+}
+
+.log-row--error:hover {
+  background-color: #fee2e2;
+}
+
+.log-row--warn {
+  background-color: #fffbeb;
+}
+
+.log-row--warn:hover {
+  background-color: #fef3c7;
+}
+
+.log-row--info {
+  background-color: #eff6ff;
+}
+
+.log-row--info:hover {
+  background-color: #e0f2fe;
+}
+
+.log-row--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9ca3af;
+  font-style: italic;
+}
+
+.log-row__time {
+  flex-shrink: 0;
+  width: 80px;
+  color: #6b7280;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.log-row__severity {
+  flex-shrink: 0;
+  width: 60px;
+  text-align: center;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
+.log-row__severity--error {
+  background-color: #fee2e2;
+  color: #dc2626;
+}
+
+.log-row__severity--warn {
+  background-color: #fef3c7;
+  color: #d97706;
+}
+
+.log-row__severity--info {
+  background-color: #dbeafe;
+  color: #2563eb;
+}
+
+.log-row__message {
+  flex: 1;
+  color: #111827;
+  word-break: break-word;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.log-viewer__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100px;
+  color: #9ca3af;
+  font-style: italic;
+}
+
+/* Scrollbar styling (webkit browsers) */
+.log-viewer__list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.log-viewer__list::-webkit-scrollbar-track {
+  background-color: #f3f4f6;
+}
+
+.log-viewer__list::-webkit-scrollbar-thumb {
+  background-color: #d1d5db;
+  border-radius: 4px;
+}
+
+.log-viewer__list::-webkit-scrollbar-thumb:hover {
+  background-color: #9ca3af;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .log-viewer__header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .log-viewer__filters {
+    flex-wrap: wrap;
+  }
+
+  .log-row {
+    font-size: 11px;
+    padding: 6px 12px;
+  }
+
+  .log-row__time {
+    width: 70px;
+  }
+
+  .log-row__severity {
+    width: 50px;
+    font-size: 9px;
+  }
+}

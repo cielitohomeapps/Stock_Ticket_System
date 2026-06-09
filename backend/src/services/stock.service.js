@@ -86,62 +86,99 @@ function normalizeItems(items) {
 async function processInventoryMovements(ticket, clientToken) {
   const normalizedItems = normalizeItems(ticket.items || []);
   const movementResults = [];
+  const processedItems = [];
 
-  for (const item of normalizedItems) {
-    let apiResult;
+  try {
+    for (const item of normalizedItems) {
+      let apiResult;
 
-    if (ticket.type === "ENTRY") {
-      // The /reingreso endpoint adds the given qty to existing stock — pass item.qty directly.
-      apiResult = await reingressProduct(
-          item.productId,
-          item.qty,
-          item.reason || ticket.metadata?.motivo,
-          clientToken,
-      );
-    } else {
-      // For EXIT: fetch current stock first to validate sufficiency.
-      const detail = await getProductById(item.productId, clientToken);
-      console.log(`[processInventoryMovements] Full API response for ${item.productId}:`, JSON.stringify(detail, null, 2));
-      
-      const product = detail?.data || detail || {};
-      console.log(`[processInventoryMovements] Extracted product for ${item.productId}:`, JSON.stringify(product, null, 2));
-      
-      // Try multiple stock field names
-      let currentStock = 0;
-      const stockKeys = ['stock', 'Stock', 'STOCK', 'cantidad', 'Cantidad', 'CANTIDAD', 'existencias', 'Existencias', 'disponible', 'Disponible'];
-      for (const key of stockKeys) {
-        if (product[key] !== undefined && product[key] !== null) {
-          currentStock = Number(product[key]);
-          console.log(`[processInventoryMovements] Found stock in field '${key}': ${currentStock}`);
-          if (currentStock >= 0) break;
-        }
-      }
-      
-      console.log(`[processInventoryMovements] Final stock for ${item.productId}: ${currentStock}, requested: ${item.qty}`);
-
-      if (currentStock < item.qty) {
-        throw new Error(
-            `Stock insuficiente para producto ${item.productId}. ` +
-            `Disponible: ${currentStock}, solicitado: ${item.qty}.`,
+      if (ticket.type === "ENTRY") {
+        // The /reingreso endpoint adds the given qty to existing stock — pass item.qty directly.
+        console.log(`[processInventoryMovements] Calling reingressProduct for ${item.productId}, qty: ${item.qty}, reason: ${item.reason}`);
+        apiResult = await reingressProduct(
+            item.productId,
+            item.qty,
+            item.reason || ticket.metadata?.motivo,
+            clientToken,
         );
+        console.log(`[processInventoryMovements] reingressProduct response:`, JSON.stringify(apiResult, null, 2));
+        processedItems.push({ item, op: 'ENTRY' });
+      } else {
+        // For EXIT: fetch current stock first to validate sufficiency.
+        console.log(`[processInventoryMovements] Fetching product ${item.productId}`);
+        const detail = await getProductById(item.productId, clientToken);
+        console.log(`[processInventoryMovements] Full API response for ${item.productId}:`, JSON.stringify(detail, null, 2));
+        
+        const product = detail?.data || detail || {};
+        console.log(`[processInventoryMovements] Extracted product for ${item.productId}:`, JSON.stringify(product, null, 2));
+        
+        // Try multiple stock field names
+        let currentStock = 0;
+        const stockKeys = ['stock', 'Stock', 'STOCK', 'cantidad', 'Cantidad', 'CANTIDAD', 'existencias', 'Existencias', 'disponible', 'Disponible'];
+        for (const key of stockKeys) {
+          if (product[key] !== undefined && product[key] !== null) {
+            currentStock = Number(product[key]);
+            console.log(`[processInventoryMovements] Found stock in field '${key}': ${currentStock}`);
+            if (currentStock >= 0) break;
+          }
+        }
+        
+        console.log(`[processInventoryMovements] Final stock for ${item.productId}: ${currentStock}, requested: ${item.qty}`);
+
+        if (currentStock < item.qty) {
+          throw new Error(
+              `Stock insuficiente para producto ${item.productId}. ` +
+              `Disponible: ${currentStock}, solicitado: ${item.qty}.`,
+          );
+        }
+        
+        // The /descontar endpoint subtracts the given qty from existing stock.
+        console.log(`[processInventoryMovements] Calling discountProduct for ${item.productId}, qty: ${item.qty}, reason: ${item.reason}`);
+        apiResult = await discountProduct(
+            item.productId,
+            item.qty,
+            item.reason || ticket.metadata?.motivo,
+            clientToken,
+        );
+        console.log(`[processInventoryMovements] discountProduct response:`, JSON.stringify(apiResult, null, 2));
+        processedItems.push({ item, op: 'EXIT' });
       }
-      // The /descontar endpoint subtracts the given qty from existing stock.
-      apiResult = await discountProduct(
-          item.productId,
-          item.qty,
-          item.reason || ticket.metadata?.motivo,
-          clientToken,
-      );
+
+      movementResults.push({
+        ...item,
+        operation: ticket.type === "ENTRY" ? "reingreso" : "descuento",
+        response: apiResult?.data || apiResult,
+      });
     }
 
-    movementResults.push({
-      ...item,
-      operation: ticket.type === "ENTRY" ? "reingreso" : "descuento",
-      response: apiResult?.data || apiResult,
-    });
+    return movementResults;
+  } catch (error) {
+    if (processedItems.length) {
+      console.error('Error en movimiento, iniciando rollback de productos procesados:', error.message);
+      for (const record of processedItems) {
+        try {
+          if (record.op === 'ENTRY') {
+            await discountProduct(
+              record.item.productId,
+              record.item.qty,
+              'Rollback por fallo en ticket',
+              clientToken,
+            );
+          } else {
+            await reingressProduct(
+              record.item.productId,
+              record.item.qty,
+              'Rollback por fallo en ticket',
+              clientToken,
+            );
+          }
+        } catch (rollbackError) {
+          console.error(`FALLO CRÍTICO DE ROLLBACK para producto ${record.item.productId}:`, rollbackError.message);
+        }
+      }
+    }
+    throw error;
   }
-
-  return movementResults;
 }
 
 async function finalizeSuccess(ticketId, approverUserId, movementResults) {
@@ -167,6 +204,54 @@ async function finalizeSuccess(ticketId, approverUserId, movementResults) {
       stockMovementId: movementRef.id,
       stockProcessing: false,
       stockError: FieldValue.delete(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  });
+}
+
+/**
+ * Fallback: When stock sync fails but we have validated stock,
+ * mark the ticket as approved with a partial sync status.
+ * This allows business continuity while recording the error.
+ */
+async function finalizeSuccessPartial(ticketId, approverUserId, movementResults, syncErrorMessage) {
+  const ticketRef = db.collection("tickets").doc(ticketId);
+  const movementRef = db.collection("stockMovements").doc(`ticket_${ticketId}`);
+  const syncErrorRef = db.collection("stockSyncErrors").doc(`ticket_${ticketId}`);
+
+  await db.runTransaction(async (trx) => {
+    // Record the partial movement attempt
+    const movementDoc = await trx.get(movementRef);
+    if (!movementDoc.exists) {
+      trx.set(movementRef, {
+        ticketId,
+        source: "inventory-api-partial",
+        items: movementResults,
+        approvedBy: approverUserId,
+        status: "PARTIAL_SYNC_ERROR",
+        error: syncErrorMessage,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    // Record the sync error for retry/manual review
+    trx.set(syncErrorRef, {
+      ticketId,
+      error: syncErrorMessage,
+      movementAttempt: movementResults,
+      createdAt: FieldValue.serverTimestamp(),
+      requiresManualReview: true,
+    });
+
+    // Update ticket as approved despite sync error
+    trx.update(ticketRef, {
+      status: STATUS.STOCK_UPDATED,
+      approvedBy: approverUserId,
+      approvedAt: FieldValue.serverTimestamp(),
+      stockMovementId: movementRef.id,
+      stockProcessing: false,
+      stockError: syncErrorMessage, // Keep error for reference
+      stockSyncWarning: "Stock sync failed - manual review may be needed",
       updatedAt: FieldValue.serverTimestamp(),
     });
   });

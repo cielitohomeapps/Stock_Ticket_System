@@ -10,6 +10,8 @@ function getInventoryBaseUrl() {
 
 let cachedToken = null;
 let tokenExpiry = 0;
+let cachedAreas = null;
+let areasCacheExpiry = 0;
 
 async function fetchJsonWithTimeout(url, options = {}) {
   const controller = new AbortController();
@@ -106,9 +108,15 @@ async function callInventoryApi({path, method = "GET", body, clientToken}) {
         .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase();
 
+    // A 500 with a null/empty payload typically means the auth middleware
+    // crashed on an invalid/expired token rather than returning a clean 401.
+    const isNullPayload = payload === null || payload === undefined;
+    const isAuthCrash = status === 500 && isNullPayload;
+
     return (
       status === 401 ||
       status === 403 ||
+      isAuthCrash ||
       (normalized.includes("token") && normalized.includes("invalido")) ||
       (normalized.includes("sesion") && normalized.includes("expir")) ||
       normalized.includes("unauthorized") ||
@@ -122,12 +130,13 @@ async function callInventoryApi({path, method = "GET", body, clientToken}) {
       return clientAttempt.payload;
     }
 
-    if (!isInvalidTokenError(clientAttempt.payload, clientAttempt.response.status)) {
+    const clientIsTokenError = isInvalidTokenError(clientAttempt.payload, clientAttempt.response.status);
+    if (!clientIsTokenError) {
       const message = normalizeMessage(clientAttempt.payload, clientAttempt.response.status);
       console.error(`[inventory-api] Client token request failed for ${path}:`, clientAttempt.response.status, message, clientAttempt.payload);
       throw new Error(message);
     }
-    console.warn(`[inventory-api] Client token invalid for ${path}, falling back to service token.`, clientAttempt.response.status, clientAttempt.payload);
+    console.warn(`[inventory-api] Client token invalid/expired for ${path} (status ${clientAttempt.response.status}), falling back to service token.`, clientAttempt.payload);
   }
 
   let fallbackToken = await getServiceToken();
@@ -214,6 +223,11 @@ function extractProductsArray(payload) {
 }
 
 async function getAvailableAreas(clientToken) {
+  const now = Date.now();
+  if (cachedAreas && areasCacheExpiry > now) {
+    return cachedAreas;
+  }
+
   const payload = await callInventoryApi({path: "/productos", method: "GET", clientToken});
   const products = extractProductsArray(payload);
 
@@ -234,7 +248,9 @@ async function getAvailableAreas(clientToken) {
     }
   }
 
-  return Array.from(areaSet).sort((a, b) => a.localeCompare(b, "es"));
+  cachedAreas = Array.from(areaSet).sort((a, b) => a.localeCompare(b, "es"));
+  areasCacheExpiry = now + 10 * 60 * 1000; // Cache por 10 minutos
+  return cachedAreas;
 }
 
 async function discountProduct(productId, qty, reason, clientToken) {

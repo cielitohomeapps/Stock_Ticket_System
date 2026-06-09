@@ -1,0 +1,702 @@
+/**
+ * Analytics Dashboard Styling
+ * Comprehensive CSS for all analytics components with mobile responsiveness
+ */
+
+/* ==================== VARIABLES ==================== */
+:root {
+  --primary-color: #0066cc;
+  --success-color: #28a745;
+  --warning-color: #ffc107;
+  --danger-color: #dc3545;
+  --info-color: #17a2b8;
+  
+  --exit-color: #dc3545;
+  --entry-color: #28a745;
+  
+  --text-primary: #333333;
+  --text-secondary: #666666;
+  --text-muted: #999999;
+  
+  --border-color: #e1e1e1;
+  --bg-light: #f8f9fa;
+  --bg-white: #ffffff;
+  
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  
+  --border-radius: 8px;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.12);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+/* ==================== LAYOUT ==================== */
+
+.analytics-dashboard {
+  padding: var(--spacing-lg);
+  background-color: var(--bg-light);
+  min-height: 100vh;
+}
+
+.dashboard-header {
+  margin-bottom: var(--spacing-lg);
+}
+
+.dashboard-header h1 {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 var(--spacing-sm) 0;
+}
+
+.dashboard-header p {
+  color: var(--text-secondary);
+  margin: 0;
+  font-size: 14px;
+}
+
+/* ==================== FILTER BAR ==================== */
+
+.filter-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+  background-color: var(--bg-white);
+  padding: var(--spacing-md);
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.filter-group label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.filter-select,
+.filter-input {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: inherit;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.filter-select:hover,
+.filter-input:hover {
+  border-color: var(--primary-color);
+}
+
+.filter-select:focus,
+.filter-input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
+}
+
+/* ==================== KPI CARDS ==================== */
+
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+}
+
+.kpi-card {
+  background-color: var(--bg-white);
+  border-radius: var(--border-radius);
+  padding: var(--spacing-md);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  box-shadow: var(--shadow-sm);
+  border-left: 4px solid var(--primary-color);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.kpi-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.kpi-card--primary {
+  border-left-color: var(--primary-color);
+}
+
+.kpi-card--success {
+  border-left-color: var(--success-color);
+}
+
+.kpi-card--warning {
+  border-left-color: var(--warning-color);
+}
+
+.kpi-card--danger {
+  border-left-color: var(--danger-color);
+}
+
+.kpi-icon {
+  font-size: 32px;
+  min-width: 50px;
+  text-align: center;
+}
+
+.kpi-content {
+  flex: 1;
+}
+
+.kpi-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  margin-bottom: var(--spacing-xs);
+}
+
+.kpi-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.kpi-change {
+  font-size: 12px;
+  margin-top: var(--spacing-xs);
+  font-weight: 600;
+}
+
+.kpi-change.positive {
+  color: var(--success-color);
+}
+
+.kpi-change.negative {
+  color: var(--danger-color);
+}
+
+/* ==================== CHARTS ==================== */
+
+.charts-row {
+  display: grid;
+  grid-template-columns: 60% 1fr;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+}
+
+.chart-container {
+  background-color: var(--bg-white);
+  border-radius: var(--border-radius);
+  padding: var(--spacing-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.chart-container h3 {
+  margin: 0 0 var(--spacing-md) 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ==================== TABLES ==================== */
+
+.tables-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+}
+
+.table-container {
+  background-color: var(--bg-white);
+  border-radius: var(--border-radius);
+  padding: var(--spacing-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.table-container h3 {
+  margin: 0 0 var(--spacing-md) 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.table-wrapper {
+  overflow-x: auto;
+  border-radius: 4px;
+}
+
+.analytics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.analytics-table thead {
+  background-color: var(--bg-light);
+  border-bottom: 2px solid var(--border-color);
+}
+
+.analytics-table th {
+  padding: var(--spacing-sm) var(--spacing-md);
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.analytics-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.2s;
+}
+
+.analytics-table th.sortable:hover {
+  background-color: #eee;
+}
+
+.analytics-table th.text-right {
+  text-align: right;
+}
+
+.analytics-table td {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.analytics-table tbody tr:hover {
+  background-color: var(--bg-light);
+}
+
+.analytics-table td.text-right {
+  text-align: right;
+}
+
+.analytics-table td.text-center {
+  text-align: center;
+}
+
+.analytics-table td.text-muted {
+  color: var(--text-muted);
+}
+
+/* ==================== BADGES & INDICATORS ==================== */
+
+.row-number {
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  background-color: var(--bg-light);
+  border-radius: 50%;
+  text-align: center;
+  line-height: 24px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-right: var(--spacing-sm);
+}
+
+.qty-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.qty-exit {
+  background-color: rgba(220, 53, 69, 0.1);
+  color: var(--exit-color);
+}
+
+.qty-entry {
+  background-color: rgba(40, 167, 69, 0.1);
+  color: var(--entry-color);
+}
+
+.balance-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.balance-badge.positive {
+  background-color: rgba(40, 167, 69, 0.1);
+  color: var(--entry-color);
+}
+
+.balance-badge.negative {
+  background-color: rgba(220, 53, 69, 0.1);
+  color: var(--exit-color);
+}
+
+.count-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  background-color: var(--bg-light);
+  border-radius: 4px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.type-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.type-exit {
+  background-color: rgba(220, 53, 69, 0.1);
+  color: var(--exit-color);
+}
+
+.type-entry {
+  background-color: rgba(40, 167, 69, 0.1);
+  color: var(--entry-color);
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-approved {
+  background-color: rgba(40, 167, 69, 0.1);
+  color: var(--success-color);
+}
+
+.status-pending {
+  background-color: rgba(255, 193, 7, 0.1);
+  color: #ff9800;
+}
+
+.status-rejected {
+  background-color: rgba(220, 53, 69, 0.1);
+  color: var(--danger-color);
+}
+
+.status-default {
+  background-color: rgba(0, 0, 0, 0.05);
+  color: var(--text-secondary);
+}
+
+/* ==================== PERCENTAGE BAR ==================== */
+
+.percentage-bar {
+  position: relative;
+  width: 100%;
+  height: 24px;
+  background-color: var(--bg-light);
+  border-radius: 4px;
+  overflow: hidden;
+  min-width: 80px;
+}
+
+.percentage-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary-color), var(--info-color));
+  transition: width 0.3s ease;
+}
+
+.percentage-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  z-index: 1;
+}
+
+/* ==================== TICKETS TABLE ==================== */
+
+.tickets-table-container {
+  background-color: var(--bg-white);
+  border-radius: var(--border-radius);
+  padding: var(--spacing-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.table-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-md);
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+}
+
+.table-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.table-controls {
+  display: flex;
+  gap: var(--spacing-md);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tickets-table td.products-summary {
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==================== PAGINATION ==================== */
+
+.pagination-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: var(--spacing-md);
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--border-color);
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+}
+
+.pagination-info {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.pagination-controls {
+  display: flex;
+  gap: var(--spacing-sm);
+  align-items: center;
+}
+
+.pagination-indicator {
+  font-size: 13px;
+  color: var(--text-secondary);
+  min-width: 100px;
+  text-align: center;
+}
+
+/* ==================== BUTTONS ==================== */
+
+.btn {
+  display: inline-block;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+  text-decoration: none;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background-color: var(--primary-color);
+  color: white;
+  border-color: var(--primary-color);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: #0052a3;
+  border-color: #0052a3;
+}
+
+.btn-sm {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+/* ==================== PRODUCT NAME ==================== */
+
+.product-name {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+/* ==================== MOBILE RESPONSIVE ==================== */
+
+@media (max-width: 1024px) {
+  .kpi-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .charts-row {
+    grid-template-columns: 1fr;
+  }
+
+  .tables-row {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-bar {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .analytics-dashboard {
+    padding: var(--spacing-md);
+  }
+
+  .kpi-row {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .table-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .table-controls {
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .filter-group,
+  .filter-select,
+  .filter-input {
+    width: 100%;
+  }
+
+  .analytics-table {
+    font-size: 12px;
+  }
+
+  .analytics-table th,
+  .analytics-table td {
+    padding: var(--spacing-xs) var(--spacing-sm);
+  }
+
+  .pagination-container {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .pagination-controls {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .kpi-value {
+    font-size: 24px;
+  }
+
+  .dashboard-header h1 {
+    font-size: 22px;
+  }
+}
+
+@media (max-width: 480px) {
+  .analytics-dashboard {
+    padding: var(--spacing-sm);
+  }
+
+  .kpi-card {
+    flex-direction: column;
+    text-align: center;
+    gap: var(--spacing-sm);
+  }
+
+  .kpi-icon {
+    min-width: auto;
+    font-size: 28px;
+  }
+
+  .kpi-value {
+    font-size: 20px;
+  }
+
+  .dashboard-header h1 {
+    font-size: 20px;
+  }
+
+  .analytics-table {
+    font-size: 11px;
+  }
+
+  .analytics-table th,
+  .analytics-table td {
+    padding: 4px 2px;
+  }
+
+  .row-number {
+    width: 20px;
+    height: 20px;
+    line-height: 20px;
+    font-size: 10px;
+    margin-right: 4px;
+  }
+
+  .table-wrapper {
+    overflow-x: scroll;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .pagination-indicator {
+    min-width: auto;
+  }
+}
+
+/* ==================== UTILITY CLASSES ==================== */
+
+.text-right {
+  text-align: right;
+}
+
+.text-center {
+  text-align: center;
+}
+
+.text-muted {
+  color: var(--text-muted);
+}
+
+.py-4 {
+  padding-top: var(--spacing-lg);
+  padding-bottom: var(--spacing-lg);
+}
+
+time {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}

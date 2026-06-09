@@ -1,0 +1,81 @@
+/**
+ * TimeSeriesChart component styling.
+ * Chart container with responsive layout.
+ */
+
+.time-series-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background-color: #ffffff;
+}
+
+.time-series-chart__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.time-series-chart__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+}
+
+/* Recharts customization */
+.recharts-wrapper {
+  background-color: transparent;
+}
+
+.recharts-surface {
+  background-color: transparent;
+}
+
+.recharts-cartesian-axis-tick {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.recharts-default-tooltip {
+  background-color: rgba(31, 41, 55, 0.95) !important;
+  border-radius: 6px;
+  border: none !important;
+  padding: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.chart-tooltip {
+  background-color: rgba(31, 41, 55, 0.95);
+  color: #ffffff;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.chart-tooltip__label {
+  margin: 0 0 6px 0;
+  font-weight: 600;
+}
+
+.chart-tooltip p {
+  margin: 4px 0;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .time-series-chart {
+    padding: 12px;
+    gap: 8px;
+  }
+
+  .time-series-chart__title {
+    font-size: 13px;
+  }
+
+  .recharts-cartesian-axis-tick {
+    font-size: 10px;
+  }
+}

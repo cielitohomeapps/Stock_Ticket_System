@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import logoCH from '../assets/logoch.jpeg'
+import { ProductSearch } from './ProductSearch'
+
 
 // ─── Helpers (normalization / product field extraction) ──────────────────────
 function normalizeArea(value) {
@@ -123,6 +125,9 @@ function CielitoHomeLogo() {
   )
 }
 
+// ---- Search bar for products (optional) ───────────────────────────────────────────────
+
+
 // ─── Main component ───────────────────────────────────────────────────────────
 /**
  * TicketForm
@@ -148,6 +153,7 @@ export default function TicketForm({
   const [loadingAreas, setLoadingAreas] = useState(true)
   const [areasError, setAreasError] = useState('')
   const [area, setArea] = useState('')
+  const [locationOptions, setLocationOptions] = useState([])
 
   // ── Ticket type ──
   const [ticketType, setTicketType] = useState('EXIT')
@@ -194,16 +200,35 @@ export default function TicketForm({
       .then((r) => r.json())
       .then((data) => {
         if (!active) return
-        const list = Array.isArray(data?.areas) ? data.areas : []
-        setAreas(list)
-        if (!area && list.length > 0) setArea(list[0])
-        sessionStorage.setItem(cacheKey, JSON.stringify({ areas: list, savedAt: Date.now() }))
+        const invList = Array.isArray(data?.areas) ? data.areas : []
+        setAreas(invList)
+        if (!area && invList.length > 0) setArea(invList[0])
+        sessionStorage.setItem(cacheKey, JSON.stringify({ areas: invList, savedAt: Date.now() }))
       })
       .catch((err) => { if (active) setAreasError(err.message) })
       .finally(() => { if (active) setLoadingAreas(false) })
 
     return () => { active = false }
   }, [apiBase, firebaseToken]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Fetch location suggestions for destination input ──
+  useEffect(() => {
+    if (!firebaseToken) return
+
+    let active = true
+    fetch(`${apiBase}/locations`, {
+      headers: { Authorization: `Bearer ${firebaseToken}` },
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (!active) return
+        const list = Array.isArray(data?.locations) ? data.locations.map((item) => item.name).filter(Boolean) : []
+        setLocationOptions(list)
+      })
+      .catch(() => {})
+
+    return () => { active = false }
+  }, [apiBase, firebaseToken])
 
   // ── Fetch products when area changes ──
   useEffect(() => {
@@ -365,6 +390,7 @@ export default function TicketForm({
 
           {/* Productos */}
           <div>
+            <ProductSearch products={products} onSelect={(product) => toggleItem(product)} />
             <p className="ticket-section-label">Productos</p>
             {loadingProducts && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)', fontSize: '13px', padding: '12px 0' }}>
@@ -451,9 +477,15 @@ export default function TicketForm({
             type="text"
             value={destino}
             onChange={(e) => setDestino(e.target.value)}
-            placeholder="¿Dónde va el material?"
+            placeholder="Ej. Jesus Maria o JESUS MARIA"
             className="field-inline-input"
+            list="ticket-location-options"
           />
+          <datalist id="ticket-location-options">
+            {locationOptions.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
         </div>
 
         <div className="ticket-divider" />

@@ -29,6 +29,16 @@ function formatDate(iso) {
   return new Date(iso).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' })
 }
 
+function formatFirestoreTimestamp(value) {
+  if (!value) return '—'
+  if (typeof value === 'string') return formatDate(value)
+  if (value?.toDate && typeof value.toDate === 'function') return formatDate(value.toDate().toISOString())
+  if (typeof value === 'object' && value._seconds != null && value._nanoseconds != null) {
+    return formatDate(new Date(value._seconds * 1000 + Math.floor(value._nanoseconds / 1e6)).toISOString())
+  }
+  return String(value)
+}
+
 // ── Skeleton loader ───────────────────────────────────────────────────────────
 function SkeletonTable({ cols = 5, rows = 5 }) {
   return (
@@ -629,6 +639,156 @@ function UsersTab({ apiBase, firebaseToken, currentUserEmail }) {
   )
 }
 
+// ── Tab: Ubicaciones (lista + crear) ─────────────────────────────────────────
+function LocationsTab({ apiBase, firebaseToken }) {
+  const toast = useToast()
+  const [locations, setLocations] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState({ name: '', aliases: '' })
+  const [saving, setSaving] = useState(false)
+  const [editingLocation, setEditingLocation] = useState(null)
+
+  const load = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`${apiBase}/locations`, { headers: { Authorization: `Bearer ${firebaseToken}` } })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
+      setLocations(Array.isArray(data.locations) ? data.locations : [])
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { load() }, [apiBase, firebaseToken])
+
+  const resetForm = () => {
+    setForm({ name: '', aliases: '' })
+    setEditingLocation(null)
+    setShowForm(false)
+  }
+
+  const saveLocation = async () => {
+    setSaving(true)
+    try {
+      const aliasesArray = form.aliases.split(',').map(s => s.trim()).filter(Boolean)
+      const method = editingLocation ? 'PATCH' : 'POST'
+      const url = editingLocation ? `${apiBase}/locations/${editingLocation.id}` : `${apiBase}/locations`
+      const res = await fetch(url, {
+        method,
+        headers: { Authorization: `Bearer ${firebaseToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: form.name, aliases: aliasesArray }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
+      toast.success(editingLocation ? 'Ubicación actualizada' : 'Ubicación guardada')
+      resetForm()
+      load()
+    } catch (e) {
+      toast.error((editingLocation ? 'Error actualizando ubicación: ' : 'Error creando ubicación: ') + e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleEdit = (location) => {
+    setEditingLocation(location)
+    setForm({
+      name: location.name || '',
+      aliases: Array.isArray(location.aliases) ? location.aliases.join(', ') : '',
+    })
+    setShowForm(true)
+  }
+
+  const handleDelete = async (location) => {
+    if (!window.confirm(`Eliminar la ubicación "${location.name}"? Esta acción no se puede deshacer.`)) {
+      return
+    }
+    try {
+      const res = await fetch(`${apiBase}/locations/${location.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${firebaseToken}` },
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
+      toast.success('Ubicación eliminada')
+      load()
+    } catch (e) {
+      toast.error('Error eliminando ubicación: ' + e.message)
+    }
+  }
+
+  return (
+    <div className="admin-tab">
+      <div className="admin-toolbar">
+        <h3 className="admin-tab-title">Ubicaciones canónicas</h3>
+        <div className="admin-toolbar-right">
+          <button className="btn-admin-primary" onClick={() => { setShowForm(true); setForm({ name: '', aliases: '' }) }}>+ Nueva ubicación</button>
+          <button className="btn-admin-secondary" onClick={load} disabled={loading}>{loading ? '…' : '↺'}</button>
+        </div>
+      </div>
+
+      {error && <div className="admin-error">{error}</div>}
+
+      {loading ? (
+        <SkeletonTable cols={3} rows={6} />
+      ) : locations.length === 0 ? (
+        <div className="admin-empty"><strong>Sin ubicaciones</strong><p>Agrega la primera ubicación canónica.</p></div>
+      ) : (
+        <div className="admin-table-wrap">
+          <table className="admin-table">
+            <thead>
+              <tr><th>Nombre</th><th>Aliases</th><th>Creado</th><th>Acciones</th></tr>
+            </thead>
+            <tbody>
+              {locations.map((l) => (
+                <tr key={l.id}>
+                  <td>{l.name}</td>
+                  <td>{Array.isArray(l.aliases) ? l.aliases.join(', ') : ''}</td>
+                  <td>{formatFirestoreTimestamp(l.createdAt)}</td>
+                  <td>
+                    <button className="btn-admin-secondary btn-small" type="button" onClick={() => handleEdit(l)}>Editar</button>
+                    <button className="btn-admin-danger btn-small" type="button" onClick={() => handleDelete(l)}>Eliminar</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {showForm && (
+        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h4>Nueva ubicación</h4>
+              <button className="modal-close-btn" onClick={() => setShowForm(false)}>×</button>
+            </div>
+            <div className="form-group">
+              <label className="admin-label">Nombre</label>
+              <input className="admin-input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+            </div>
+            <div className="form-group">
+              <label className="admin-label">Aliases (separados por coma)</label>
+              <input className="admin-input" value={form.aliases} onChange={(e) => setForm((f) => ({ ...f, aliases: e.target.value }))} placeholder="Jesús María, JESUS MARIA" />
+            </div>
+            <div className="modal-actions">
+              <button className="btn-admin-secondary" onClick={resetForm}>Cancelar</button>
+              <button className="btn-admin-primary" onClick={saveLocation} disabled={saving}>{saving ? 'Guardando…' : editingLocation ? 'Guardar cambios' : 'Crear'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 // ── Tab: Configuración de correos ─────────────────────────────────────────────
 function EmailConfigTab({ apiBase, firebaseToken }) {
   const toast = useToast()
@@ -804,6 +964,7 @@ const MAIL_ICON   = <svg width="15" height="15" viewBox="0 0 24 24" fill="none" 
 
 const TABS = [
   { id: 'tickets', label: 'Tickets', icon: TICKET_ICON },
+  { id: 'locations', label: 'Ubicaciones', icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 6-9 12-9 12S3 16 3 10a9 9 0 1 1 18 0z"/><circle cx="12" cy="10" r="2"/></svg> },
   { id: 'users',   label: 'Usuarios', icon: USERS_ICON },
   { id: 'emails',  label: 'Correos',  icon: MAIL_ICON },
 ]
@@ -848,6 +1009,9 @@ export default function AdminPanel({ apiBase, firebaseToken, currentUserEmail, o
       <div className="admin-tab-content">
         {activeTab === 'tickets' && (
           <TicketsTab apiBase={apiBase} firebaseToken={firebaseToken} />
+        )}
+        {activeTab === 'locations' && (
+          <LocationsTab apiBase={apiBase} firebaseToken={firebaseToken} />
         )}
         {activeTab === 'users' && (
           <UsersTab apiBase={apiBase} firebaseToken={firebaseToken} currentUserEmail={currentUserEmail} />

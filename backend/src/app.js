@@ -11,24 +11,38 @@ const {admin, db} = require("./config/firebase");
 const ticketController = require("./controllers/ticketController");
 const inventoryController = require("./controllers/inventoryController");
 const userController = require("./controllers/userController");
+const locationController = require("./controllers/locationController");
+const reportController = require("./controllers/reportController");
 
-// Services
-const {
-  listUsers,
-  createUser,
-  updateUser,
-  deleteUser,
-  getEmailConfig,
-  saveEmailConfig,
-} = require("./services/user.service");
+// Middleware
+const errorHandler = require("./middleware/errorHandler");
 
 const SUPERADMIN_EMAIL = "sistemasch17@gmail.com";
 const ADMIN_ROLES = ["admin", "superadmin"];
+
+const {metricsStore} = require("./services/metrics.service");
 
 const app = express();
 
 app.use(cors({origin: true}));
 app.use(express.json());
+
+// ── Metrics middleware ────────────────────────────────────────────────────────
+/**
+ * Track request latency and status for real-time metrics.
+ * Records every request to the metrics store for aggregation.
+ */
+app.use((req, res, next) => {
+  const startTime = Date.now();
+  
+  res.on("finish", () => {
+    const durationMs = Date.now() - startTime;
+    const userId = req.user?.id || null;
+    metricsStore.recordRequest(res.statusCode, durationMs, userId);
+  });
+  
+  next();
+});
 
 // Serve static files from the React app build directory
 app.use(express.static(path.join(__dirname, '../../frontend/dist')));
@@ -80,8 +94,8 @@ async function requireUser(req, res, next) {
   }
 
   if (token.startsWith("dev_token_")) {
-    if (process.env.NODE_ENV === "production") {
-      return res.status(401).json({error: "Dev tokens no permitidos en producción"});
+    if (process.env.NODE_ENV === "production" || process.env.ALLOW_DEV_TOKENS !== "true") {
+      return res.status(401).json({error: "Dev tokens no habilitados en este entorno"});
     }
     req.user = {id: "dev-user", email: "dev@localhost", role: "admin", areasPermitidas: [], esAdminLevel: true};
     req.authToken = token;
@@ -315,71 +329,59 @@ app.post("/api/admin/tickets/:id/approve", requireUser, requireAdmin, ticketCont
 app.post("/api/admin/tickets/:id/reject", requireUser, requireAdmin, ticketController.reject);
 
 // ── Admin: users ──────────────────────────────────────────────────────────────
-app.get("/api/admin/users", requireUser, requireAdmin, async (_req, res) => {
-  try {
-    const users = await listUsers();
-    return res.json({users});
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
-
-app.post("/api/admin/users", requireUser, requireAdmin, async (req, res) => {
-  try {
-    const {email, rol, areasPermitidas, nombre} = req.body;
-    const result = await createUser({email, rol, areasPermitidas, nombre});
-    await addAuditEntry("users", "USER_CREATED", req.user.id, {email, rol});
-    return res.status(201).json(result);
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
-
-app.patch("/api/admin/users/:uid", requireUser, requireAdmin, async (req, res) => {
-  try {
-    const {rol, areasPermitidas, nombre} = req.body;
-    const result = await updateUser(req.params.uid, {rol, areasPermitidas, nombre});
-    await addAuditEntry("users", "USER_UPDATED", req.user.id, {uid: req.params.uid, rol});
-    return res.json(result);
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
-
-app.delete("/api/admin/users/:uid", requireUser, requireAdmin, async (req, res) => {
-  try {
-    await deleteUser(req.params.uid);
-    await addAuditEntry("users", "USER_DELETED", req.user.id, {uid: req.params.uid});
-    return res.json({ok: true});
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
+app.get("/api/admin/users", requireUser, requireAdmin, userController.list);
+app.post("/api/admin/users", requireUser, requireAdmin, userController.create);
+app.patch("/api/admin/users/:uid", requireUser, requireAdmin, userController.update);
+app.delete("/api/admin/users/:uid", requireUser, requireAdmin, userController.delete);
 
 // ── Admin: email config ───────────────────────────────────────────────────────
-app.get("/api/admin/email-config", requireUser, requireAdmin, async (_req, res) => {
-  try {
-    const config = await getEmailConfig();
-    return res.json(config);
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
-});
+app.get("/api/admin/email-config", requireUser, requireAdmin, userController.getEmailConfig);
+app.put("/api/admin/email-config", requireUser, requireAdmin, userController.updateEmailConfig);
 
-app.put("/api/admin/email-config", requireUser, requireAdmin, async (req, res) => {
-  try {
-    const {recipients, ccRecipients, fromName} = req.body;
-    await saveEmailConfig({recipients, ccRecipients, fromName});
-    return res.json({ok: true});
-  } catch (error) {
-    return res.status(400).json({error: error.message});
-  }
+// ── Locations: canonical catalog and reports ───────────────────────────────────
+app.get("/api/locations", requireUser, locationController.list);
+app.post("/api/locations", requireUser, requireAdmin, locationController.create);
+app.patch("/api/locations/:id", requireUser, requireAdmin, locationController.update);
+app.delete("/api/locations/:id", requireUser, requireAdmin, locationController.delete);
+app.get("/api/reports/locations", requireUser, requireAdmin, locationController.reportByLocation);
+app.get("/api/reports/destinos", requireUser, requireAdmin, locationController.reportByLocation);
+app.get("/api/reports/executive", requireUser, requireAdmin, reportController.getExecutiveReport);
+app.get("/api/admin/analytics/tickets", requireUser, requireAdmin, reportController.getAnalyticsTickets);
+
+// ── Metrics endpoints ─────────────────────────────────────────────────────────
+
+/**
+ * @swagger
+ * /api/metrics/snapshot:
+ *   get:
+ *     summary: Get current metrics snapshot (polling fallback)
+ *     responses:
+ *       200:
+ *         description: Current metrics
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 metrics:
+ *                   type: object
+ *                 logs:
+ *                   type: array
+ */
+app.get("/api/metrics/snapshot", (req, res) => {
+  res.json({
+    metrics: metricsStore.getSnapshot(),
+    logs: metricsStore.getRecentEvents(50),
+  });
 });
 
 // Catch all handler: send back React's index.html file for client-side routing
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../../frontend/dist/index.html'));
 });
+
+// ── Global error handler (must be last) ────────────────────────────────────
+app.use(errorHandler);
 
 module.exports = {
   app,
