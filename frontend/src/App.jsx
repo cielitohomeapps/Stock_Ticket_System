@@ -90,6 +90,14 @@ function App() {
   const [ticketId, setTicketId] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState(null)
+  const [draftTicket, setDraftTicket] = useState(null)
+
+  const handleEditDraft = (ticket) => {
+    setDraftTicket(ticket)
+    setView('ticket')
+    setStep(1)
+    window.location.hash = 'ticket'
+  }
 
   const handleSubmit = async ({ area: a, ticketType: type, fecha, selectedItems: items, reason: r, firma: f, destino: d }) => {
     setSubmitting(true)
@@ -102,26 +110,34 @@ function App() {
         metadata: { area: a, motivo: r, firma: f, destino: d, fecha },
       }
 
-      const res = await fetch(`${API_BASE}/tickets`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${firebaseToken}`,
-        },
-        body: JSON.stringify(body),
-      })
-
-      const data = await res.json()
-      if (!res.ok) throw new Error(data?.error || `Error ${res.status}`)
-
-      // Automatically send to review so it appears in the admin panel
-      await fetch(`${API_BASE}/tickets/${data.ticketId}/send-review`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${firebaseToken}`,
-        },
-      })
+      let res;
+      let data;
+      if (draftTicket) {
+        // Edit existing draft
+        res = await fetch(`${API_BASE}/tickets/${draftTicket.id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${firebaseToken}`,
+          },
+          body: JSON.stringify(body),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data?.error || `Error ${res.status}`);
+        data.ticketId = draftTicket.id;
+      } else {
+        // Create new ticket
+        res = await fetch(`${API_BASE}/tickets`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${firebaseToken}`,
+          },
+          body: JSON.stringify(body),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data?.error || `Error ${res.status}`);
+      }
 
       setArea(a)
       setTicketType(type)
@@ -148,6 +164,7 @@ function App() {
     setDestino('')
     setTicketId(null)
     setSubmitError(null)
+    setDraftTicket(null)
   }
 
   const logout = async () => {
@@ -296,6 +313,7 @@ function App() {
                 window.location.hash = 'ticket'
                 setView('ticket')
               }}
+              onEdit={handleEditDraft}
             />
           ) : (
             <div className="ticket-page page-enter">
@@ -326,6 +344,7 @@ function App() {
                       onSubmit={handleSubmit}
                       submitting={submitting}
                       submitError={submitError}
+                      initialData={draftTicket}
                     />
                   )}
 

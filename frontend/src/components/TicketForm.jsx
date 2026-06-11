@@ -145,6 +145,7 @@ export default function TicketForm({
   onSubmit,
   submitting,
   submitError,
+  initialData,
 }) {
   const today = new Date().toISOString().split('T')[0]
 
@@ -152,25 +153,32 @@ export default function TicketForm({
   const [areas, setAreas] = useState([])
   const [loadingAreas, setLoadingAreas] = useState(true)
   const [areasError, setAreasError] = useState('')
-  const [area, setArea] = useState('')
+  const [area, setArea] = useState(initialData?.metadata?.area || '')
   const [locationOptions, setLocationOptions] = useState([])
 
   // ── Ticket type ──
-  const [ticketType, setTicketType] = useState('EXIT')
+  const [ticketType, setTicketType] = useState(initialData?.type || 'EXIT')
 
   // ── Date ──
-  const [fecha, setFecha] = useState(today)
+  const [fecha, setFecha] = useState(initialData?.metadata?.fecha || today)
 
   // ── Products ──
   const [products, setProducts] = useState([])
   const [loadingProducts, setLoadingProducts] = useState(false)
   const [productsError, setProductsError] = useState(null)
-  const [selectedItems, setSelectedItems] = useState([])
+  
+  // Format initial items correctly
+  const initItems = (initialData?.items || []).map(i => ({
+    productId: i.productId || i.id,
+    name: i.nombre || i.name || i.productId || i.id,
+    qty: i.qty || 1
+  }));
+  const [selectedItems, setSelectedItems] = useState(initItems)
 
   // ── Form fields ──
-  const [reason, setReason] = useState('')
-  const [firma, setFirma] = useState('')
-  const [destino, setDestino] = useState('')
+  const [reason, setReason] = useState(initialData?.metadata?.motivo || '')
+  const [firma, setFirma] = useState(initialData?.metadata?.firma || '')
+  const [destino, setDestino] = useState(initialData?.metadata?.destino || '')
 
   // ── Fetch areas ──
   useEffect(() => {
@@ -507,7 +515,7 @@ export default function TicketForm({
                 Enviando…
               </>
             ) : (
-              'Confirmar ticket →'
+              'Confirmar borrador →'
             )}
           </button>
           {!valid && !submitting && (

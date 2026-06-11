@@ -279,6 +279,7 @@ app.get("/api/tickets/:id/download", requireUser, ticketController.download);
  *         description: Validation error
  */
 app.post("/api/tickets", requireUser, ticketController.create);
+app.put("/api/tickets/:id", requireUser, ticketController.update);
 
 app.post("/api/tickets/:id/send-review", requireUser, ticketController.sendToReview);
 

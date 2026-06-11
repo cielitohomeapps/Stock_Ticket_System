@@ -1,5 +1,6 @@
 const {
   createTicket,
+  updateTicket,
   sendToReview,
   rejectTicket,
   markNotified,
@@ -34,6 +35,27 @@ const ticketController = {
       });
 
       return res.status(201).json({ticketId: ticket.id});
+    } catch (error) {
+      return res.status(400).json({error: error.message});
+    }
+  },
+
+  // PUT /api/tickets/:id
+  update: async (req, res) => {
+    try {
+      const {type, items, metadata} = req.body;
+      await updateTicket(req.params.id, req.user.id, {
+        type,
+        items,
+        metadata
+      });
+
+      await addAuditEntry(req.params.id, "TICKET_UPDATED", req.user.id, {
+        type,
+        itemsCount: items?.length || 0,
+      });
+
+      return res.json({ok: true, ticketId: req.params.id});
     } catch (error) {
       return res.status(400).json({error: error.message});
     }

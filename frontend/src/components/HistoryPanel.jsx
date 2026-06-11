@@ -36,7 +36,7 @@ const WordIcon = () => (
 
 const PAGE_SIZE = 10
 
-export default function HistoryPanel({ apiBase, firebaseToken, onBack }) {
+export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit }) {
   const [tickets, setTickets] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -79,6 +79,21 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack }) {
       URL.revokeObjectURL(link.href)
     } finally {
       setDownloading(null)
+    }
+  }
+
+  const handleSendReview = async (ticketId) => {
+    try {
+      const res = await fetch(`${apiBase}/tickets/${ticketId}/send-review`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${firebaseToken}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      alert('Ticket enviado a revisión.');
+      load();
+    } catch (e) {
+      alert(`Error al enviar a revisión: ${e.message}`);
     }
   }
 
@@ -230,6 +245,16 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack }) {
                                 ))}
                               </ul>
                             </div>
+                            {t.status === 'CREADO' && (
+                              <div className="admin-detail-section admin-detail-full" style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                                <button className="btn-admin" onClick={() => handleSendReview(t.id)}>
+                                  Enviar a revisión →
+                                </button>
+                                <button className="btn-admin-secondary" onClick={() => onEdit(t)}>
+                                  Editar
+                                </button>
+                              </div>
+                            )}
                           </div>
                         </td>
                       </tr>

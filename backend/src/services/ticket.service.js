@@ -71,6 +71,60 @@ async function createTicket({type, items, assignedUsers, requestedBy, metadata})
   return {id: ticketRef.id};
 }
 
+async function updateTicket(ticketId, userId, updateData) {
+  const ticketRef = db.collection("tickets").doc(ticketId);
+
+  // Validate items before transaction
+  if (updateData.items) {
+    if (!Array.isArray(updateData.items) || !updateData.items.length) {
+      throw new Error("Debes enviar al menos un item en items.");
+    }
+    for (const item of updateData.items) {
+      const productId = item.productId || item.id || item.sku;
+      const qty = Number(item.qty);
+      if (!productId || !Number.isFinite(qty) || qty <= 0) {
+        throw new Error("Cada item debe incluir productId y qty > 0.");
+      }
+    }
+  }
+
+  if (updateData.type && !["ENTRY", "EXIT"].includes(updateData.type)) {
+    throw new Error("type debe ser ENTRY o EXIT.");
+  }
+
+  const safeMetadata = {...(updateData.metadata || {})};
+  if (safeMetadata.destino) {
+    const destinoRecord = await ensureLocationRecord(safeMetadata.destino);
+    safeMetadata.destino = destinoRecord.name || safeMetadata.destino;
+  }
+
+  await db.runTransaction(async (trx) => {
+    const ticketDoc = await trx.get(ticketRef);
+    if (!ticketDoc.exists) {
+      throw new Error("Ticket no encontrado.");
+    }
+
+    const ticket = ticketDoc.data();
+    if (ticket.status !== STATUS.CREATED) {
+      throw new Error("Solo se puede editar un ticket en estado CREADO.");
+    }
+
+    if (ticket.requestedBy !== userId) {
+      throw new Error("No tienes permiso para editar este ticket.");
+    }
+
+    const updates = { updatedAt: FieldValue.serverTimestamp() };
+    if (updateData.items) updates.items = updateData.items;
+    if (updateData.type) updates.type = updateData.type;
+    if (Object.keys(safeMetadata).length > 0) {
+      // Merge with existing metadata
+      updates.metadata = { ...(ticket.metadata || {}), ...safeMetadata };
+    }
+
+    trx.update(ticketRef, updates);
+  });
+}
+
 async function sendToReview(ticketId, requestedBy, clientToken) {
   const ticketRef = db.collection("tickets").doc(ticketId);
 
@@ -157,8 +211,8 @@ async function rejectTicket(ticketId, approverUserId, comment) {
     }
 
     const ticket = ticketDoc.data();
-    if (ticket.status !== STATUS.IN_REVIEW) {
-      throw new Error("Solo se puede rechazar un ticket en EN_REVISION.");
+    if (ticket.status !== STATUS.IN_REVIEW && ticket.status !== STATUS.CREATED) {
+      throw new Error("Solo se puede rechazar un ticket en CREADO o EN_REVISION.");
     }
 
     trx.update(ticketRef, {
@@ -230,6 +284,7 @@ async function listTickets({status, area, limitCount = 100} = {}) {
 
 module.exports = {
   createTicket,
+  updateTicket,
   sendToReview,
   rejectTicket,
   markNotified,

@@ -64,7 +64,7 @@ const TICKETS_PAGE_SIZE = 10
 function TicketsTab({ apiBase, firebaseToken }) {
   const toast = useToast()
   const [tickets, setTickets] = useState([])
-  const [filterStatus, setFilterStatus] = useState('EN_REVISION')
+  const [filterStatus, setFilterStatus] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [actionState, setActionState] = useState({}) // { [ticketId]: 'loading'|'done'|'error' }
@@ -241,7 +241,7 @@ function TicketsTab({ apiBase, firebaseToken }) {
                       <td className="ticket-user">{t.requestedBy?.slice(0, 12) || '—'}</td>
                       <td>{formatDate(t.createdAt)}</td>
                       <td onClick={(e) => e.stopPropagation()}>
-                        {t.status === 'EN_REVISION' && (
+                        {(t.status === 'EN_REVISION' || t.status === 'CREADO') && (
                           <div className="action-btns">
                             <button
                               className="btn-approve"

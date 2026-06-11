@@ -10,8 +10,7 @@ function getInventoryBaseUrl() {
 
 let cachedToken = null;
 let tokenExpiry = 0;
-let cachedAreas = null;
-let areasCacheExpiry = 0;
+let cachedAreas = {};
 
 async function fetchJsonWithTimeout(url, options = {}) {
   const controller = new AbortController();
@@ -215,6 +214,39 @@ async function getProductsByArea(area, clientToken) {
   throw lastError || new Error("No se pudo consultar productos por area.");
 }
 
+function unwrapTypedValue(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  if (typeof value.stringValue === 'string') return value.stringValue;
+  if (value.integerValue !== undefined) return value.integerValue;
+  if (value.doubleValue !== undefined) return value.doubleValue;
+  if (typeof value.booleanValue === 'boolean') return value.booleanValue;
+  if (value.timestampValue) return value.timestampValue;
+  if (value.mapValue?.fields) {
+    const out = {};
+    Object.entries(value.mapValue.fields).forEach(([k, v]) => { out[k] = unwrapTypedValue(v); });
+    return out;
+  }
+  if (Array.isArray(value.arrayValue?.values)) return value.arrayValue.values.map(unwrapTypedValue);
+  if (value.fields && typeof value.fields === 'object') {
+    const out = {};
+    Object.entries(value.fields).forEach(([k, v]) => { out[k] = unwrapTypedValue(v); });
+    return out;
+  }
+  return value;
+}
+
+function flattenProduct(item) {
+  if (item?.fields && typeof item.fields === 'object') {
+    const decoded = unwrapTypedValue({ fields: item.fields }) || {};
+    const fallbackId = typeof item.name === 'string' ? item.name.split('/').pop() : undefined;
+    return { id: item.id || item._id || fallbackId, ...decoded };
+  }
+  if (item?.data && typeof item.data === 'object' && !Array.isArray(item.data)) {
+    return { id: item.id || item._id || item.data.id, ...item.data };
+  }
+  return item;
+}
+
 function extractProductsArray(payload) {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.data)) return payload.data;
@@ -224,15 +256,18 @@ function extractProductsArray(payload) {
 
 async function getAvailableAreas(clientToken) {
   const now = Date.now();
-  if (cachedAreas && areasCacheExpiry > now) {
-    return cachedAreas;
+  const tokenKey = clientToken ? String(clientToken).slice(-20) : 'service';
+
+  if (cachedAreas[tokenKey] && cachedAreas[tokenKey].expiry > now) {
+    return cachedAreas[tokenKey].areas;
   }
 
   const payload = await callInventoryApi({path: "/productos", method: "GET", clientToken});
   const products = extractProductsArray(payload);
 
   const areaSet = new Set();
-  for (const item of products) {
+  for (const rawItem of products) {
+    const item = flattenProduct(rawItem);
     const value =
       item?.area ??
       item?.Area ??
@@ -248,9 +283,11 @@ async function getAvailableAreas(clientToken) {
     }
   }
 
-  cachedAreas = Array.from(areaSet).sort((a, b) => a.localeCompare(b, "es"));
-  areasCacheExpiry = now + 10 * 60 * 1000; // Cache por 10 minutos
-  return cachedAreas;
+  cachedAreas[tokenKey] = {
+    areas: Array.from(areaSet).sort((a, b) => a.localeCompare(b, "es")),
+    expiry: now + 10 * 60 * 1000
+  };
+  return cachedAreas[tokenKey].areas;
 }
 
 async function discountProduct(productId, qty, reason, clientToken) {
