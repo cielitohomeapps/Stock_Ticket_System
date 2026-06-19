@@ -4,8 +4,6 @@
  * Thread-safe for high-frequency updates.
  */
 
-const {FieldValue} = require("../config/firebase");
-
 /**
  * Circular buffer implementation for fixed-size log storage.
  * Automatically overwrites oldest entries when full.

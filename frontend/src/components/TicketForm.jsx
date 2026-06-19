@@ -1,120 +1,15 @@
 import React, { useState, useEffect } from 'react'
 import logoCH from '../assets/logoch.jpeg'
 import { ProductSearch } from './ProductSearch'
-
-
-// ─── Helpers (normalization / product field extraction) ──────────────────────
-function normalizeArea(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-}
-
-function unwrapTypedValue(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
-  if (typeof value.stringValue === 'string') return value.stringValue
-  if (value.integerValue !== undefined) return value.integerValue
-  if (value.doubleValue !== undefined) return value.doubleValue
-  if (typeof value.booleanValue === 'boolean') return value.booleanValue
-  if (value.timestampValue) return value.timestampValue
-  if (value.mapValue?.fields) {
-    const out = {}
-    Object.entries(value.mapValue.fields).forEach(([k, v]) => { out[k] = unwrapTypedValue(v) })
-    return out
-  }
-  if (Array.isArray(value.arrayValue?.values)) return value.arrayValue.values.map(unwrapTypedValue)
-  if (value.fields && typeof value.fields === 'object') {
-    const out = {}
-    Object.entries(value.fields).forEach(([k, v]) => { out[k] = unwrapTypedValue(v) })
-    return out
-  }
-  return value
-}
-
-function asText(value) {
-  if (value === null || value === undefined) return null
-  const text = String(value).trim()
-  return text || null
-}
-
-function getProductId(p) {
-  return p?._id || p?.id || p?.productId || p?.productoId || p?.producto_id
-}
-
-function getProductName(p) {
-  const candidates = [
-    p?.nombre, p?.Nombre, p?.name, p?.Name,
-    p?.Producto, p?.producto, p?.Dispositivo, p?.dispositivo,
-    p?.descripcion, p?.description, p?.titulo, p?.title,
-  ]
-  for (const v of candidates) {
-    const t = asText(unwrapTypedValue(v))
-    if (t) return t
-  }
-  return asText(getProductId(p)) || 'Sin nombre'
-}
-
-const STOCK_KEYS = [
-  'stock', 'Stock', 'STOCK',
-  'cantidad', 'Cantidad', 'CANTIDAD',
-  'existencias', 'Existencias',
-  'cantidadDisponible', 'CantidadDisponible',
-  'stockActual', 'StockActual',
-  'quantity', 'Quantity',
-  'qty', 'Qty',
-  'inventario', 'Inventario',
-  'disponible', 'Disponible', 'disponibles', 'Disponibles',
-  'unidades', 'Unidades',
-  'totalDisponible', 'TotalDisponible',
-  'enStock', 'en_stock',
-]
-
-function getProductStock(p) {
-  // Try known keys first
-  for (const key of STOCK_KEYS) {
-    if (p?.[key] !== undefined && p?.[key] !== null) {
-      const n = unwrapTypedValue(p[key])
-      if (n !== null && n !== undefined && n !== '') {
-        const num = Number(n)
-        if (!Number.isNaN(num)) return Number.isInteger(num) ? num : num.toFixed(2)
-        return String(n)
-      }
-    }
-  }
-  // Fallback: scan all keys for anything stock-like
-  if (p && typeof p === 'object') {
-    const stockPattern = /stock|cant|exist|qty|quant|invent|disp|unid/i
-    for (const [key, val] of Object.entries(p)) {
-      if (stockPattern.test(key)) {
-        const n = unwrapTypedValue(val)
-        if (n !== null && n !== undefined && n !== '') {
-          const num = Number(n)
-          if (!Number.isNaN(num)) return Number.isInteger(num) ? num : num.toFixed(2)
-        }
-      }
-    }
-  }
-  return '—'
-}
-
-function getProductArea(p) {
-  return p?.area || p?.Area || p?.departamento || p?.Departamento ||
-    p?.categoria || p?.Categoria || p?.sector || p?.Sector
-}
-
-function flattenProduct(item) {
-  if (item?.fields && typeof item.fields === 'object') {
-    const decoded = unwrapTypedValue({ fields: item.fields }) || {}
-    const fallbackId = typeof item.name === 'string' ? item.name.split('/').pop() : undefined
-    return { id: item.id || item._id || fallbackId, ...decoded }
-  }
-  if (item?.data && typeof item.data === 'object' && !Array.isArray(item.data)) {
-    return { id: item.id || item._id || item.data.id, ...item.data }
-  }
-  return item
-}
+import {
+  normalizeArea,
+  unwrapTypedValue,
+  getProductId,
+  getProductName,
+  getProductStock,
+  getProductArea,
+  flattenProduct,
+} from '../utils/productHelpers'
 
 // ─── Logo Cielito Home ────────────────────────────────────────────────────────
 function CielitoHomeLogo() {
@@ -460,9 +355,10 @@ export default function TicketForm({
               <input
                 type="text"
                 value={firma}
-                onChange={(e) => setFirma(e.target.value)}
+                onChange={(e) => setFirma(e.target.value.slice(0, 200))}
                 placeholder="Nombre completo"
                 className="firma-input"
+                maxLength={200}
               />
             </div>
           </div>
@@ -474,9 +370,10 @@ export default function TicketForm({
           <input
             type="text"
             value={reason}
-            onChange={(e) => setReason(e.target.value)}
+            onChange={(e) => setReason(e.target.value.slice(0, 500))}
             placeholder="Motivo del movimiento"
             className="field-inline-input"
+            maxLength={500}
           />
         </div>
         <div className="field-inline">
@@ -484,9 +381,10 @@ export default function TicketForm({
           <input
             type="text"
             value={destino}
-            onChange={(e) => setDestino(e.target.value)}
+            onChange={(e) => setDestino(e.target.value.slice(0, 200))}
             placeholder="Ej. Jesus Maria o JESUS MARIA"
             className="field-inline-input"
+            maxLength={200}
             list="ticket-location-options"
           />
           <datalist id="ticket-location-options">

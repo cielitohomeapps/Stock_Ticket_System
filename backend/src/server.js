@@ -17,6 +17,17 @@ const wss = initMetricsWebSocket(server, WebSocket);
 // Start broadcasting metrics to all connected clients
 const broadcastInterval = startMetricsBroadcast(5000);
 
+// ── Global error handlers ─────────────────────────────────────────────────────
+process.on("unhandledRejection", (reason) => {
+  console.error("[FATAL] Unhandled Rejection:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL] Uncaught Exception:", err.message, err.stack);
+  server.close(() => process.exit(1));
+  setTimeout(() => process.exit(1), 10000).unref();
+});
+
 // Graceful shutdown handler
 process.on("SIGTERM", () => {
   console.log("SIGTERM received, shutting down gracefully...");

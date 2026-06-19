@@ -6,7 +6,7 @@ import logoCH from '../assets/logoch.jpeg'
 export default function FirebaseAuthPanel({ onTokenReceived, onError }) {
   const [loading, setLoading] = useState(false)
   const [localError, setLocalError] = useState('')
-  const isDev = import.meta.env.DEV
+  const isDev = import.meta.env.DEV && window.location.hostname === 'localhost'
 
   const handleGoogleSignIn = async () => {
     setLoading(true)

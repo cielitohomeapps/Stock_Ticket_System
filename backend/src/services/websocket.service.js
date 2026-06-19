@@ -5,12 +5,38 @@
  */
 
 const {metricsStore} = require("./metrics.service");
+const {admin} = require("../config/firebase");
 
 /**
  * Container for all active WebSocket connections.
  * @type {Set<WebSocket>}
  */
 const activeConnections = new Set();
+
+/**
+ * Validate Firebase token and return user info.
+ * Returns null if token is invalid.
+ */
+async function validateWsToken(token) {
+  if (!token) return null;
+
+  if (token.startsWith("dev_token_")) {
+    if (process.env.NODE_ENV === "production" || process.env.ALLOW_DEV_TOKENS !== "true") {
+      return null;
+    }
+    return {id: "dev-user", email: "dev@localhost", role: "admin"};
+  }
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    return {
+      id: decoded.uid,
+      email: (decoded.email || "").toLowerCase().trim(),
+    };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Initialize WebSocket server on Express HTTP server.
@@ -31,33 +57,43 @@ function initMetricsWebSocket(server, WebSocket) {
 
   /**
    * Handle HTTP upgrade request for WebSocket connection.
-   * Called by: server.on('upgrade', ...)
+   * Only accepts authenticated requests.
    */
-  server.on("upgrade", (request, socket, head) => {
-    if (request.url === "/api/metrics") {
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit("connection", ws, request);
-      });
-    } else {
+  server.on("upgrade", async (request, socket, head) => {
+    if (request.url !== "/api/metrics") {
       socket.destroy();
+      return;
     }
+
+    const authHeader = request.headers.authorization || "";
+    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+    const wsUser = await validateWsToken(token);
+
+    if (!wsUser) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    request.wsUser = wsUser;
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request);
+    });
   });
 
   /**
    * Handle new WebSocket connection.
    */
   wss.on("connection", (ws, request) => {
+    const wsUser = request.wsUser || {id: "unknown"};
     console.log(
-      "[WebSocket] Client connected from",
-      request.socket.remoteAddress
+      "[WebSocket] Client connected — user:",
+      wsUser.email || wsUser.id
     );
     activeConnections.add(ws);
 
-    // Extract user ID from request headers (if authenticated)
-    const authHeader = request.headers.authorization || "";
-    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
-    const userId = token ? `user_${token.slice(0, 8)}` : `anon_${Math.random().toString(36).slice(2, 9)}`;
-
+    const userId = wsUser.id;
     metricsStore.registerSession(ws, userId);
 
     // Send initial snapshot

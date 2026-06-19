@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 
 const TYPE_LABEL = { EXIT: 'Salida', ENTRY: 'Entrada' }
 const STATUS_LABEL = {
@@ -41,27 +41,49 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [expandedId, setExpandedId] = useState(null)
-  const [downloading, setDownloading] = useState(null) // `${ticketId}-pdf` | `${ticketId}-word`
+  const [downloading, setDownloading] = useState(null)
+  const [sendingReview, setSendingReview] = useState(null)
   const [page, setPage] = useState(1)
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
+    let active = true
+    const controller = new AbortController()
+
     try {
       const res = await fetch(`${apiBase}/my-tickets`, {
         headers: { Authorization: `Bearer ${firebaseToken}` },
+        signal: controller.signal,
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
-      setTickets(data.tickets || [])
+      if (active) setTickets(data.tickets || [])
     } catch (e) {
-      setError(e.message)
+      if (active && e.name !== 'AbortError') setError(e.message)
     } finally {
-      setLoading(false)
+      if (active) setLoading(false)
+    }
+
+    return () => {
+      active = false
+      controller.abort()
     }
   }, [apiBase, firebaseToken])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const cleanup = load()
+    return () => {
+      if (typeof cleanup === 'function') cleanup()
+    }
+  }, [load])
+
+  // Auto-refresh when a ticket is created
+  useEffect(() => {
+    const handler = () => load()
+    window.addEventListener('ticket-created', handler)
+    return () => window.removeEventListener('ticket-created', handler)
+  }, [load])
 
   const download = async (ticketId, format) => {
     const key = `${ticketId}-${format}`
@@ -83,6 +105,8 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
   }
 
   const handleSendReview = async (ticketId) => {
+    if (sendingReview === ticketId) return
+    setSendingReview(ticketId)
     try {
       const res = await fetch(`${apiBase}/tickets/${ticketId}/send-review`, {
         method: 'POST',
@@ -90,10 +114,11 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
-      alert('Ticket enviado a revisión.');
       load();
     } catch (e) {
       alert(`Error al enviar a revisión: ${e.message}`);
+    } finally {
+      setSendingReview(null)
     }
   }
 
@@ -247,8 +272,8 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
                             </div>
                             {t.status === 'CREADO' && (
                               <div className="admin-detail-section admin-detail-full" style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
-                                <button className="btn-admin" onClick={() => handleSendReview(t.id)}>
-                                  Enviar a revisión →
+                                <button className="btn-admin" onClick={() => handleSendReview(t.id)} disabled={sendingReview === t.id}>
+                                  {sendingReview === t.id ? 'Enviando…' : 'Enviar a revisión →'}
                                 </button>
                                 <button className="btn-admin-secondary" onClick={() => onEdit(t)}>
                                   Editar

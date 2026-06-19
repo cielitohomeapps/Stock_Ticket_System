@@ -68,12 +68,12 @@ export function AnalyticsDashboard({ apiBase, firebaseToken }: { apiBase: string
     formatDateForInput(filters.dateRange.endDate)
   );
 
-  // Initialize service
+  // Re-initialize service when token or API base changes
   useEffect(() => {
     initializeAnalyticsService(apiBase, firebaseToken);
   }, [apiBase, firebaseToken]);
 
-  // Fetch data when filters change
+  // Fetch data when filters or token change
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -82,17 +82,15 @@ export function AnalyticsDashboard({ apiBase, firebaseToken }: { apiBase: string
 
         const service = getAnalyticsService();
 
-        // Fetch metrics and tickets
         const computedMetrics = await service.computeMetrics(filters);
         const fetchedTickets = await service.fetchTickets(filters);
 
         setMetrics(computedMetrics);
         setTickets(fetchedTickets);
 
-        // Format tickets for table
         const rows = service.formatTicketsForTable(fetchedTickets);
         setTicketRows(rows);
-      } catch (err) {
+      } catch (err: any) {
         const message = err instanceof Error ? err.message : 'Failed to fetch data';
         setError(message);
         console.error('Dashboard error:', err);
@@ -102,7 +100,7 @@ export function AnalyticsDashboard({ apiBase, firebaseToken }: { apiBase: string
     };
 
     fetchData();
-  }, [filters]);
+  }, [filters, firebaseToken]);
 
   // Handle date range changes
   const handleDateRangeChange = () => {
@@ -151,7 +149,7 @@ export function AnalyticsDashboard({ apiBase, firebaseToken }: { apiBase: string
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-    } catch (err) {
+    } catch (err: any) {
       const message = err instanceof Error ? err.message : 'Export failed';
       setError(message);
       console.error('Export error:', err);

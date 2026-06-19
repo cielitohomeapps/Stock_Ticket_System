@@ -16,8 +16,13 @@ const reportController = require("./controllers/reportController");
 
 // Middleware
 const errorHandler = require("./middleware/errorHandler");
+const {
+  SUPERADMIN_EMAIL,
+  requireSuperAdmin,
+  requireAdmin,
+  requireApprover,
+} = require("./middleware/authorization");
 
-const SUPERADMIN_EMAIL = "sistemasch17@gmail.com";
 const ADMIN_ROLES = ["admin", "superadmin"];
 
 const {metricsStore} = require("./services/metrics.service");
@@ -141,19 +146,7 @@ async function requireUser(req, res, next) {
   }
 }
 
-function requireAdmin(req, res, next) {
-  if (!req.user?.esAdminLevel) {
-    return res.status(403).json({error: "Se requiere rol de administrador"});
-  }
-  return next();
-}
 
-function requireApprover(req, res, next) {
-  if (!req.user?.esAdminLevel) {
-    return res.status(403).json({error: "Tu rol no puede aprobar/rechazar tickets"});
-  }
-  return next();
-}
 
 /**
  * @swagger
@@ -337,7 +330,7 @@ app.delete("/api/admin/users/:uid", requireUser, requireAdmin, userController.de
 
 // ── Admin: email config ───────────────────────────────────────────────────────
 app.get("/api/admin/email-config", requireUser, requireAdmin, userController.getEmailConfig);
-app.put("/api/admin/email-config", requireUser, requireAdmin, userController.updateEmailConfig);
+app.put("/api/admin/email-config", requireUser, requireSuperAdmin, userController.updateEmailConfig);
 
 // ── Locations: canonical catalog and reports ───────────────────────────────────
 app.get("/api/locations", requireUser, locationController.list);
@@ -369,7 +362,7 @@ app.get("/api/admin/analytics/tickets", requireUser, requireAdmin, reportControl
  *                 logs:
  *                   type: array
  */
-app.get("/api/metrics/snapshot", (req, res) => {
+app.get("/api/metrics/snapshot", requireUser, (req, res) => {
   res.json({
     metrics: metricsStore.getSnapshot(),
     logs: metricsStore.getRecentEvents(50),

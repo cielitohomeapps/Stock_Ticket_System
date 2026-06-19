@@ -297,16 +297,9 @@ module.exports = {
 async function listTicketsByUser(userId, limitCount = 50) {
   const snapshot = await db.collection("tickets")
     .where("requestedBy", "==", userId)
+    .orderBy("createdAt", "desc")
     .limit(limitCount)
     .get();
 
-  const tickets = snapshot.docs.map((d) => serializeTicketDoc(d));
-
-  tickets.sort((a, b) => {
-    const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-    const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-    return tb - ta;
-  });
-
-  return tickets;
+  return snapshot.docs.map((d) => serializeTicketDoc(d));
 }

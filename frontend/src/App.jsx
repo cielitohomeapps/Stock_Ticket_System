@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { onIdTokenChanged, signOut } from 'firebase/auth'
 import { auth } from './config/firebase'
 import './App.css'
@@ -34,6 +34,7 @@ function App() {
   const [userRole, setUserRole] = useState(null)
   const [view, setView] = useState('ticket') // 'ticket' | 'admin'
   const [initializing, setInitializing] = useState(true) // true while Firebase checks stored session
+  const cachedTokenRef = useRef(null)
 
   // onIdTokenChanged fires on login AND every ~1h when Firebase auto-refreshes the token
   useEffect(() => {
@@ -42,6 +43,8 @@ function App() {
       if (user) {
         try {
           const token = await user.getIdToken()
+          if (token === cachedTokenRef.current) return // skip duplicate token refresh
+          cachedTokenRef.current = token
           setFirebaseToken(token)
           setFirebaseUser(user)
           setStep((s) => (s === 0 ? 1 : s))
@@ -147,6 +150,8 @@ function App() {
       setDestino(d)
       setTicketId(data.ticketId)
       setStep(2)
+
+      window.dispatchEvent(new CustomEvent('ticket-created', { detail: { ticketId: data.ticketId } }))
     } catch (err) {
       setSubmitError(err.message)
     } finally {

@@ -1,44 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react'
-
-// --- Small product helpers (copied from TicketForm.jsx to avoid circular imports)
-function unwrapTypedValue(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
-  if (typeof value.stringValue === 'string') return value.stringValue
-  if (value.integerValue !== undefined) return value.integerValue
-  if (value.doubleValue !== undefined) return value.doubleValue
-  if (typeof value.booleanValue === 'boolean') return value.booleanValue
-  if (value.timestampValue) return value.timestampValue
-  if (value.mapValue?.fields) {
-    const out = {}
-    Object.entries(value.mapValue.fields).forEach(([k, v]) => { out[k] = unwrapTypedValue(v) })
-    return out
-  }
-  if (Array.isArray(value.arrayValue?.values)) return value.arrayValue.values.map(unwrapTypedValue)
-  if (value.fields && typeof value.fields === 'object') {
-    const out = {}
-    Object.entries(value.fields).forEach(([k, v]) => { out[k] = unwrapTypedValue(v) })
-    return out
-  }
-  return value
-}
-
-function asText(value) {
-  if (value === null || value === undefined) return null
-  const text = String(value).trim()
-  return text || null
-}
-
-function normalizeText(value) {
-  return asText(value)
-    ?.toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0000-\u001F\u007F-\u007F]/g, '')
-    .replace(/[\u0300-\u036f]/g, '')
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')
-}
+import {
+  unwrapTypedValue,
+  asText,
+  normalizeText,
+  escapeRegExp,
+  getProductId,
+  getProductName,
+} from '../utils/productHelpers'
 
 function highlightMatch(text, query) {
   if (!query) return text
@@ -49,23 +17,6 @@ function highlightMatch(text, query) {
       ? <mark key={idx}>{segment}</mark>
       : <span key={idx}>{segment}</span>
   ))
-}
-
-function getProductId(p) {
-  return p?._id || p?.id || p?.productId || p?.productoId || p?.producto_id
-}
-
-function getProductName(p) {
-  const candidates = [
-    p?.nombre, p?.Nombre, p?.name, p?.Name,
-    p?.Producto, p?.producto, p?.Dispositivo, p?.dispositivo,
-    p?.descripcion, p?.description, p?.titulo, p?.title,
-  ]
-  for (const v of candidates) {
-    const t = asText(unwrapTypedValue(v))
-    if (t) return t
-  }
-  return asText(getProductId(p)) || 'Sin nombre'
 }
 
 export const ProductSearch = ({ products, onSelect }) => {

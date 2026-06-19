@@ -17,6 +17,12 @@ async function getUserByEmail(email) {
   return {id: snap.docs[0].id, ...snap.docs[0].data()};
 }
 
+async function getUserById(uid) {
+  const snap = await db.collection(COLLECTION).doc(uid).get();
+  if (!snap.exists) return null;
+  return {id: snap.id, ...snap.data()};
+}
+
 async function createUser({email, rol, areasPermitidas, nombre}) {
   if (!email || !email.includes("@")) {
     throw new Error("Email inválido.");
@@ -101,6 +107,7 @@ async function saveEmailConfig({recipients, ccRecipients, fromName}) {
 module.exports = {
   listUsers,
   getUserByEmail,
+  getUserById,
   createUser,
   updateUser,
   deleteUser,
