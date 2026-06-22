@@ -5,7 +5,9 @@ const INVENTORY_SERVICE_UID = process.env.INVENTORY_SERVICE_UID || "inventory-se
 
 function getInventoryBaseUrl() {
   const fallbackUrl = "https://cielitohome-storage-backend.onrender.com/api";
-  return (process.env.INVENTORY_API_BASE_URL || fallbackUrl).replace(/\/$/, "");
+  const configured = (process.env.INVENTORY_API_BASE_URL || "").trim();
+  const url = (!configured || configured.includes("localhost")) ? fallbackUrl : configured;
+  return url.replace(/\/$/, "");
 }
 
 let cachedToken = null;
