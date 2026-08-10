@@ -1,4 +1,4 @@
-const { db } = require("../config/firebase");
+const { ticketDb: db } = require("../config/firebase");
 
 function asText(value) {
   if (value === null || value === undefined) return null
@@ -67,14 +67,15 @@ function getProductNameFromDoc(docData) {
   return null
 }
 
-// Helper: get product name from ID
+// Helper: get product name from ID via inventory API (no direct Firestore access)
+const {getProductById} = require("../services/inventory-api.service");
+
 async function getProductName(productId) {
   try {
-    const doc = await db.collection("productos").doc(productId).get();
-    if (doc.exists) {
-      const name = getProductNameFromDoc(doc.data())
-      if (name) return name
-    }
+    const detail = await getProductById(productId);
+    const product = detail?.data || detail || {};
+    const name = getProductNameFromDoc(product);
+    if (name) return name;
   } catch (e) {
     // Silent fail, use ID as fallback
   }

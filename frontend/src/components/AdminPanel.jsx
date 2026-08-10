@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useToast } from './Toast'
+import { apiFetchJson, apiDownload } from '../services/apiClient'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const ROLES = ['usuario', 'jefe_area', 'admin', 'superadmin']
@@ -13,6 +14,7 @@ const STATUS_LABEL = {
   CREADO: 'Creado',
   EN_REVISION: 'En revisión',
   RECHAZADO: 'Rechazado',
+  PENDIENTE_CORRECCION: 'Pendiente corrección',
   STOCK_ACTUALIZADO: 'Stock actualizado',
   NOTIFICADO: 'Notificado',
 }
@@ -20,6 +22,7 @@ const STATUS_COLOR = {
   CREADO: 'var(--text-muted)',
   EN_REVISION: '#b07d00',
   RECHAZADO: '#c0392b',
+  PENDIENTE_CORRECCION: '#e67e22',
   STOCK_ACTUALIZADO: '#2d6e62',
   NOTIFICADO: '#2d6e62',
 }
@@ -70,6 +73,9 @@ function TicketsTab({ apiBase, firebaseToken }) {
   const [actionState, setActionState] = useState({}) // { [ticketId]: 'loading'|'done'|'error' }
   const [rejectModal, setRejectModal] = useState(null) // { ticketId }
   const [rejectComment, setRejectComment] = useState('')
+  const [returnModal, setReturnModal] = useState(null) // { ticketId }
+  const [returnComment, setReturnComment] = useState('')
+  const [confirmApprove, setConfirmApprove] = useState(null) // { ticketId, type, items }
   const [expandedId, setExpandedId] = useState(null)
   const [page, setPage] = useState(1)
   const [downloading, setDownloading] = useState(null)
@@ -79,16 +85,8 @@ function TicketsTab({ apiBase, firebaseToken }) {
     const key = `${ticketId}-${format}`
     setDownloading(key)
     try {
-      const res = await fetch(`${apiBase}/tickets/${ticketId}/download?format=${format}`, {
-        headers: { Authorization: `Bearer ${firebaseToken}` },
-      })
-      if (!res.ok) { toast.error('Error al generar el documento.'); return }
-      const blob = await res.blob()
-      const link = document.createElement('a')
-      link.href = URL.createObjectURL(blob)
-      link.download = format === 'word' ? `ticket-${ticketId}.docx` : `ticket-${ticketId}.pdf`
-      link.click()
-      URL.revokeObjectURL(link.href)
+      const filename = format === 'word' ? `ticket-${ticketId}.docx` : `ticket-${ticketId}.pdf`
+      await apiDownload(`/tickets/${ticketId}/download?format=${format}`, filename)
     } catch {
       toast.error('Error al descargar el documento.')
     } finally {
@@ -101,18 +99,14 @@ function TicketsTab({ apiBase, firebaseToken }) {
     setError(null)
     try {
       const qs = filterStatus ? `?status=${filterStatus}` : ''
-      const res = await fetch(`${apiBase}/admin/tickets${qs}`, {
-        headers: { Authorization: `Bearer ${firebaseToken}` },
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
+      const data = await apiFetchJson(`/admin/tickets${qs}`)
       setTickets(data.tickets || [])
     } catch (e) {
       setError(e.message)
     } finally {
       setLoading(false)
     }
-  }, [apiBase, firebaseToken, filterStatus])
+  }, [filterStatus])
 
   useEffect(() => { load() }, [load])
   // Reset page when filter changes
@@ -121,12 +115,10 @@ function TicketsTab({ apiBase, firebaseToken }) {
   const approve = async (ticketId) => {
     setActionState((s) => ({ ...s, [ticketId]: 'loading' }))
     try {
-      const res = await fetch(`${apiBase}/admin/tickets/${ticketId}/approve`, {
+      await apiFetchJson(`/admin/tickets/${ticketId}/approve`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${firebaseToken}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
       setActionState((s) => ({ ...s, [ticketId]: 'done' }))
       setTickets((ts) => ts.filter((t) => t.id !== ticketId))
       toast.success('Ticket aprobado correctamente.')
@@ -136,18 +128,38 @@ function TicketsTab({ apiBase, firebaseToken }) {
     }
   }
 
+  const returnToCreator = async () => {
+    if (!returnModal) return
+    const { ticketId } = returnModal
+    setActionState((s) => ({ ...s, [ticketId]: 'loading' }))
+    try {
+      await apiFetchJson(`/admin/tickets/${ticketId}/return`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comment: returnComment }),
+      })
+      setActionState((s) => ({ ...s, [ticketId]: 'done' }))
+      setTickets((ts) => ts.filter((t) => t.id !== ticketId))
+      setReturnModal(null)
+      setReturnComment('')
+      toast.info('Ticket devuelto al creador para corrección.')
+    } catch (e) {
+      setActionState((s) => ({ ...s, [ticketId]: 'error:' + e.message }))
+      setReturnModal(null)
+      toast.error('Error al devolver: ' + e.message)
+    }
+  }
+
   const reject = async () => {
     if (!rejectModal) return
     const { ticketId } = rejectModal
     setActionState((s) => ({ ...s, [ticketId]: 'loading' }))
     try {
-      const res = await fetch(`${apiBase}/admin/tickets/${ticketId}/reject`, {
+      await apiFetchJson(`/admin/tickets/${ticketId}/reject`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${firebaseToken}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ comment: rejectComment }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
       setActionState((s) => ({ ...s, [ticketId]: 'done' }))
       setTickets((ts) => ts.filter((t) => t.id !== ticketId))
       setRejectModal(null)
@@ -173,6 +185,7 @@ function TicketsTab({ apiBase, firebaseToken }) {
             <option value="">Todos los estados</option>
             <option value="EN_REVISION">En revisión</option>
             <option value="CREADO">Creados</option>
+            <option value="PENDIENTE_CORRECCION">Pendiente corrección</option>
             <option value="RECHAZADO">Rechazados</option>
             <option value="NOTIFICADO">Notificados</option>
             <option value="STOCK_ACTUALIZADO">Stock actualizado</option>
@@ -246,7 +259,7 @@ function TicketsTab({ apiBase, firebaseToken }) {
                             <button
                               className="btn-approve"
                               disabled={isLoading}
-                              onClick={() => approve(t.id)}
+                              onClick={() => setConfirmApprove({ ticketId: t.id, type: t.type, items: t.items })}
                             >
                               {isLoading ? '…' : '✓ Aprobar'}
                             </button>
@@ -256,6 +269,14 @@ function TicketsTab({ apiBase, firebaseToken }) {
                               onClick={() => { setRejectModal({ ticketId: t.id }); setRejectComment('') }}
                             >
                               ✕ Rechazar
+                            </button>
+                            <button
+                              className="btn-secondary"
+                              disabled={isLoading}
+                              onClick={() => { setReturnModal({ ticketId: t.id }); setReturnComment('') }}
+                              title="Devolver al creador para corrección"
+                            >
+                              ↩ Devolver
                             </button>
                           </div>
                         )}
@@ -373,6 +394,69 @@ function TicketsTab({ apiBase, firebaseToken }) {
           </div>
         </div>
       )}
+
+      {/* Return to creator modal */}
+      {returnModal && (
+        <div className="modal-overlay" onClick={() => setReturnModal(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h4>Devolver ticket al creador</h4>
+                <p className="modal-sub">Ticket: {returnModal.ticketId.slice(0, 12)}…</p>
+              </div>
+              <button className="modal-close-btn" onClick={() => setReturnModal(null)} aria-label="Cerrar">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <label className="admin-label">Indica qué debe corregir el creador</label>
+            <textarea
+              className="admin-textarea"
+              rows={3}
+              placeholder="Ej: El tipo de movimiento debe ser Entrada, no Salida…"
+              value={returnComment}
+              onChange={(e) => setReturnComment(e.target.value)}
+              autoFocus
+            />
+            <div className="modal-actions">
+              <button className="btn-admin-secondary" onClick={() => setReturnModal(null)}>Cancelar</button>
+              <button className="btn-approve" onClick={returnToCreator} style={{ background: '#e67e22' }}>↩ Devolver al creador</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Approve confirmation modal */}
+      {confirmApprove && (
+        <div className="modal-overlay" onClick={() => setConfirmApprove(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h4>Confirmar aprobación</h4>
+                <p className="modal-sub">Ticket: {confirmApprove.ticketId.slice(0, 12)}…</p>
+              </div>
+              <button className="modal-close-btn" onClick={() => setConfirmApprove(null)} aria-label="Cerrar">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div style={{ padding: '0 0 8px', fontSize: '14px', lineHeight: '1.5' }}>
+              <p><strong>Tipo:</strong> {confirmApprove.type === 'EXIT' ? 'Salida' : 'Entrada'}</p>
+              <p><strong>Productos:</strong></p>
+              <ul style={{ margin: '4px 0 0 20px', padding: 0 }}>
+                {(confirmApprove.items || []).map((item, i) => (
+                  <li key={i}>{item.nombre || item.name || item.productId || item.id} ×{item.qty}</li>
+                ))}
+              </ul>
+              <p style={{ marginTop: '8px', color: '#b07d00' }}>
+                Se aplicarán los movimientos de stock en el sistema de inventarios.
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button className="btn-admin-secondary" onClick={() => setConfirmApprove(null)}>Cancelar</button>
+              <button className="btn-approve" onClick={() => { const id = confirmApprove.ticketId; setConfirmApprove(null); approve(id); }}>Confirmar aprobación</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -396,18 +480,14 @@ function UsersTab({ apiBase, firebaseToken, currentUserEmail }) {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${apiBase}/admin/users`, {
-        headers: { Authorization: `Bearer ${firebaseToken}` },
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
+      const data = await apiFetchJson('/admin/users')
       setUsers(data.users || [])
     } catch (e) {
       setError(e.message)
     } finally {
       setLoading(false)
     }
-  }, [apiBase, firebaseToken])
+  }, [])
 
   useEffect(() => { load() }, [load])
 
@@ -439,22 +519,19 @@ function UsersTab({ apiBase, firebaseToken, currentUserEmail }) {
         .map((s) => s.trim())
         .filter(Boolean)
 
-      let res
       if (editUser) {
-        res = await fetch(`${apiBase}/admin/users/${editUser.id}`, {
+        await apiFetchJson(`/admin/users/${editUser.id}`, {
           method: 'PATCH',
-          headers: { Authorization: `Bearer ${firebaseToken}`, 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ nombre: form.nombre, rol: form.rol, areasPermitidas: areasArray }),
         })
       } else {
-        res = await fetch(`${apiBase}/admin/users`, {
+        await apiFetchJson('/admin/users', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${firebaseToken}`, 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: form.email, nombre: form.nombre, rol: form.rol, areasPermitidas: areasArray }),
         })
       }
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
       setShowForm(false)
       toast.success(editUser ? 'Usuario actualizado correctamente.' : 'Usuario creado correctamente.')
       load()
@@ -468,12 +545,7 @@ function UsersTab({ apiBase, firebaseToken, currentUserEmail }) {
   const deleteU = async (uid, email) => {
     if (!window.confirm(`¿Eliminar usuario ${email}?`)) return
     try {
-      const res = await fetch(`${apiBase}/admin/users/${uid}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${firebaseToken}` },
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
+      await apiFetchJson(`/admin/users/${uid}`, { method: 'DELETE' })
       toast.success(`Usuario ${email} eliminado.`)
       load()
     } catch (e) {
@@ -654,9 +726,7 @@ function LocationsTab({ apiBase, firebaseToken }) {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${apiBase}/locations`, { headers: { Authorization: `Bearer ${firebaseToken}` } })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
+      const data = await apiFetchJson('/locations')
       setLocations(Array.isArray(data.locations) ? data.locations : [])
     } catch (e) {
       setError(e.message)
@@ -665,7 +735,7 @@ function LocationsTab({ apiBase, firebaseToken }) {
     }
   }
 
-  useEffect(() => { load() }, [apiBase, firebaseToken])
+  useEffect(() => { load() }, [])
 
   const resetForm = () => {
     setForm({ name: '', aliases: '' })
@@ -678,14 +748,12 @@ function LocationsTab({ apiBase, firebaseToken }) {
     try {
       const aliasesArray = form.aliases.split(',').map(s => s.trim()).filter(Boolean)
       const method = editingLocation ? 'PATCH' : 'POST'
-      const url = editingLocation ? `${apiBase}/locations/${editingLocation.id}` : `${apiBase}/locations`
-      const res = await fetch(url, {
+      const url = editingLocation ? `/locations/${editingLocation.id}` : '/locations'
+      await apiFetchJson(url, {
         method,
-        headers: { Authorization: `Bearer ${firebaseToken}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: form.name, aliases: aliasesArray }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
       toast.success(editingLocation ? 'Ubicación actualizada' : 'Ubicación guardada')
       resetForm()
       load()
@@ -710,12 +778,7 @@ function LocationsTab({ apiBase, firebaseToken }) {
       return
     }
     try {
-      const res = await fetch(`${apiBase}/locations/${location.id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${firebaseToken}` },
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
+      await apiFetchJson(`/locations/${location.id}`, { method: 'DELETE' })
       toast.success('Ubicación eliminada')
       load()
     } catch (e) {
@@ -801,14 +864,11 @@ function EmailConfigTab({ apiBase, firebaseToken }) {
 
   useEffect(() => {
     setLoading(true)
-    fetch(`${apiBase}/admin/email-config`, {
-      headers: { Authorization: `Bearer ${firebaseToken}` },
-    })
-      .then((r) => r.json())
-      .then((data) => { if (!data.error) setConfig(data) })
+    apiFetchJson('/admin/email-config')
+      .then((data) => { setConfig(data) })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
-  }, [apiBase, firebaseToken])
+  }, [])
 
   const addEmail = (field, value, setter) => {
     const trimmed = value.trim()
@@ -825,13 +885,11 @@ function EmailConfigTab({ apiBase, firebaseToken }) {
     setSaving(true)
     setError(null)
     try {
-      const res = await fetch(`${apiBase}/admin/email-config`, {
+      await apiFetchJson('/admin/email-config', {
         method: 'PUT',
-        headers: { Authorization: `Bearer ${firebaseToken}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
       toast.success('Configuración de correos guardada correctamente.')
     } catch (e) {
       setError(e.message)

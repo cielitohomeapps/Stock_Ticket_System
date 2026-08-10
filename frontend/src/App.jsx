@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { onIdTokenChanged, signOut } from 'firebase/auth'
 import { auth } from './config/firebase'
+import { setApiToken, setOnAuthLost, apiFetchJson, API_BASE } from './services/apiClient'
 import './App.css'
 import FirebaseAuthPanel from './components/GoogleAuthPanel'
 import TicketForm from './components/TicketForm'
@@ -13,7 +14,6 @@ import { ToastProvider } from './components/Toast'
 import logoCH from './assets/logoch.jpeg'
 import AnalyticsDashboard from './pages/AnalyticsDashboard.tsx'
 
-const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 const STEPS = ['Autenticación', 'Ticket', 'Resultado']
 
 // ── Hash-based navigation ────────────────────────────────────────────────────
@@ -46,14 +46,14 @@ function App() {
           if (token === cachedTokenRef.current) return // skip duplicate token refresh
           cachedTokenRef.current = token
           setFirebaseToken(token)
+          setApiToken(token)
           setFirebaseUser(user)
           setStep((s) => (s === 0 ? 1 : s))
           setView(getHashView())
           // Fetch role only once per session (not on every token refresh)
           if (!roleAlreadyFetched) {
             roleAlreadyFetched = true
-            fetch(`${API_BASE}/me`, { headers: { Authorization: `Bearer ${token}` } })
-              .then((r) => r.ok ? r.json() : null)
+            apiFetchJson('/me')
               .then((data) => { if (data?.role) setUserRole(data.role) })
               .catch(() => { })
           }
@@ -62,6 +62,7 @@ function App() {
         }
       } else {
         setFirebaseToken(null)
+        setApiToken(null)
         setFirebaseUser(null)
         setUserRole(null)
         roleAlreadyFetched = false
@@ -72,6 +73,36 @@ function App() {
       setInitializing(false) // Firebase has resolved — show UI
     })
     return () => unsubscribe()
+  }, [])
+
+  // Proactive token refresh every 50 minutes (Firebase tokens last ~1h)
+  useEffect(() => {
+    if (!firebaseUser) return
+    const INTERVAL_MS = 50 * 60 * 1000
+    const interval = setInterval(async () => {
+      try {
+        const freshToken = await auth.currentUser?.getIdToken(true)
+        if (freshToken) {
+          cachedTokenRef.current = freshToken
+          setFirebaseToken(freshToken)
+          setApiToken(freshToken)
+        }
+      } catch { /* refresh failed, will be caught by onIdTokenChanged */ }
+    }, INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [firebaseUser])
+
+  // Handle auth lost (token refresh failed) — force logout
+  useEffect(() => {
+    setOnAuthLost((message) => {
+      setAuthError(message || 'Tu sesión expiró. Inicia sesión de nuevo.')
+      setFirebaseToken(null)
+      setFirebaseUser(null)
+      setUserRole(null)
+      setStep(0)
+      setView('ticket')
+      window.location.hash = ''
+    })
   }, [])
 
   // Sync view with browser back/forward buttons
@@ -113,33 +144,20 @@ function App() {
         metadata: { area: a, motivo: r, firma: f, destino: d, fecha },
       }
 
-      let res;
       let data;
       if (draftTicket) {
-        // Edit existing draft
-        res = await fetch(`${API_BASE}/tickets/${draftTicket.id}`, {
+        data = await apiFetchJson(`/tickets/${draftTicket.id}`, {
           method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${firebaseToken}`,
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
-        data = await res.json();
-        if (!res.ok) throw new Error(data?.error || `Error ${res.status}`);
         data.ticketId = draftTicket.id;
       } else {
-        // Create new ticket
-        res = await fetch(`${API_BASE}/tickets`, {
+        data = await apiFetchJson('/tickets', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${firebaseToken}`,
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
-        data = await res.json();
-        if (!res.ok) throw new Error(data?.error || `Error ${res.status}`);
       }
 
       setArea(a)
@@ -176,6 +194,7 @@ function App() {
     try {
       await signOut(auth)
       setFirebaseToken(null)
+      setApiToken(null)
       setFirebaseUser(null)
       setUserRole(null)
       setStep(0)

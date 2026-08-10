@@ -62,6 +62,7 @@ async function getServiceToken({forceRefreshStatic = false} = {}) {
   try {
     customToken = await admin.auth().createCustomToken(INVENTORY_SERVICE_UID);
   } catch (error) {
+    console.error("[inventory-api] Failed to create custom token:", error.message);
     throw new Error(
         "No se pudo firmar token Firebase. Configura backend/service-account.json " +
         "o las variables FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL y FIREBASE_PRIVATE_KEY en .env.",
@@ -77,15 +78,20 @@ async function getServiceToken({forceRefreshStatic = false} = {}) {
   );
 
   if (!response.ok || !payload?.idToken) {
-    throw new Error("No se pudo obtener token de servicio para inventario.");
+    console.error("[inventory-api] Token exchange failed:", response.status, payload);
+    throw new Error(
+        `No se pudo obtener token de servicio para inventario (HTTP ${response.status}). ` +
+        "Verifica que INVENTORY_SERVICE_UID y INVENTORY_AUTH_API_KEY sean correctos.",
+    );
   }
 
   cachedToken = payload.idToken;
   tokenExpiry = now + (Number(payload.expiresIn || 3600) * 1000);
+  console.log(`[inventory-api] Service token obtained, expires in ${payload.expiresIn || 3600}s`);
   return cachedToken;
 }
 
-async function callInventoryApi({path, method = "GET", body, clientToken}) {
+async function callInventoryApi({path, method = "GET", body, clientToken, _retryCount = 0}) {
   const baseUrl = getInventoryBaseUrl();
   const url = `${baseUrl}${path}`;
 
@@ -109,21 +115,17 @@ async function callInventoryApi({path, method = "GET", body, clientToken}) {
         .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase();
 
-    // A 500 with a null/empty payload typically means the auth middleware
-    // crashed on an invalid/expired token rather than returning a clean 401.
-    const isNullPayload = payload === null || payload === undefined;
-    const isAuthCrash = status === 500 && isNullPayload;
-
     return (
       status === 401 ||
       status === 403 ||
-      isAuthCrash ||
       (normalized.includes("token") && normalized.includes("invalido")) ||
       (normalized.includes("sesion") && normalized.includes("expir")) ||
       normalized.includes("unauthorized") ||
       normalized.includes("no autorizado")
     );
   };
+
+  const isTransientError = (status) => status >= 500 || status === 429;
 
   if (clientToken) {
     const clientAttempt = await requestWithToken(clientToken);
@@ -133,8 +135,19 @@ async function callInventoryApi({path, method = "GET", body, clientToken}) {
 
     const clientIsTokenError = isInvalidTokenError(clientAttempt.payload, clientAttempt.response.status);
     if (!clientIsTokenError) {
+      // Retry on transient errors
+      if (isTransientError(clientAttempt.response.status) && _retryCount < 2) {
+        console.warn(`[inventory-api] Transient error ${clientAttempt.response.status} for ${path}, retrying (${_retryCount + 1}/2)...`);
+        await new Promise((r) => setTimeout(r, 1000 * (_retryCount + 1)));
+        return callInventoryApi({path, method, body, clientToken, _retryCount: _retryCount + 1});
+      }
       const message = normalizeMessage(clientAttempt.payload, clientAttempt.response.status);
-      console.error(`[inventory-api] Client token request failed for ${path}:`, clientAttempt.response.status, message, clientAttempt.payload);
+      console.error(`[inventory-api] Client token request failed for ${path}:`, {
+        status: clientAttempt.response.status,
+        message,
+        payload: clientAttempt.payload,
+        requestBody: body,
+      });
       throw new Error(message);
     }
     console.warn(`[inventory-api] Client token invalid/expired for ${path} (status ${clientAttempt.response.status}), falling back to service token.`, clientAttempt.payload);
@@ -293,6 +306,21 @@ async function getAvailableAreas(clientToken) {
 }
 
 async function discountProduct(productId, qty, reason, clientToken) {
+  // Validate product exists before attempting discount
+  try {
+    const product = await getProductById(productId, clientToken);
+    if (!product || (!product.data && !product.id)) {
+      throw new Error(`Producto ${productId} no encontrado en inventario.`);
+    }
+  } catch (validateErr) {
+    // If we can't even read the product, throw a clear error instead of a cryptic 500
+    if (validateErr.message.includes("no encontrado") || validateErr.message.includes("Token de autenticación")) {
+      throw validateErr;
+    }
+    // If validation fails for other reasons, log but continue with the discount attempt
+    console.warn(`[inventory-api] Product validation failed for ${productId}:`, validateErr.message);
+  }
+
   const body = {cantidad: qty};
   if (reason) body.motivo = reason;
   return callInventoryApi({
@@ -304,6 +332,19 @@ async function discountProduct(productId, qty, reason, clientToken) {
 }
 
 async function reingressProduct(productId, qty, reason, clientToken) {
+  // Validate product exists before attempting reingress
+  try {
+    const product = await getProductById(productId, clientToken);
+    if (!product || (!product.data && !product.id)) {
+      throw new Error(`Producto ${productId} no encontrado en inventario.`);
+    }
+  } catch (validateErr) {
+    if (validateErr.message.includes("no encontrado") || validateErr.message.includes("Token de autenticación")) {
+      throw validateErr;
+    }
+    console.warn(`[inventory-api] Product validation failed for ${productId}:`, validateErr.message);
+  }
+
   return callInventoryApi({
     path: `/productos/${productId}/reingreso`,
     method: "POST",

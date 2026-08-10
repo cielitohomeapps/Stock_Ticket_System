@@ -1,4 +1,4 @@
-const {db, FieldValue} = require("../config/firebase");
+const {ticketDb: db, FieldValue} = require("../config/firebase");
 const {metricsStore} = require("./metrics.service");
 
 /**

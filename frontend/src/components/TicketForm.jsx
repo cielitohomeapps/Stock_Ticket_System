@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import logoCH from '../assets/logoch.jpeg'
 import { ProductSearch } from './ProductSearch'
+import { apiFetchJson } from '../services/apiClient'
 import {
   normalizeArea,
   unwrapTypedValue,
@@ -97,10 +98,7 @@ export default function TicketForm({
     }
 
     let active = true
-    fetch(`${apiBase}/inventory/areas`, {
-      headers: { Authorization: `Bearer ${firebaseToken}` },
-    })
-      .then((r) => r.json())
+    apiFetchJson('/inventory/areas')
       .then((data) => {
         if (!active) return
         const invList = Array.isArray(data?.areas) ? data.areas : []
@@ -119,10 +117,7 @@ export default function TicketForm({
     if (!firebaseToken) return
 
     let active = true
-    fetch(`${apiBase}/locations`, {
-      headers: { Authorization: `Bearer ${firebaseToken}` },
-    })
-      .then((r) => r.json())
+    apiFetchJson('/locations')
       .then((data) => {
         if (!active) return
         const list = Array.isArray(data?.locations) ? data.locations.map((item) => item.name).filter(Boolean) : []
@@ -131,7 +126,7 @@ export default function TicketForm({
       .catch(() => {})
 
     return () => { active = false }
-  }, [apiBase, firebaseToken])
+  }, [firebaseToken])
 
   // ── Fetch products when area changes ──
   useEffect(() => {
@@ -141,13 +136,7 @@ export default function TicketForm({
     setSelectedItems([])
 
     let active = true
-    fetch(`${apiBase}/inventory/products?area=${encodeURIComponent(area)}`, {
-      headers: {
-        Authorization: `Bearer ${firebaseToken}`,
-        'Content-Type': 'application/json',
-      },
-    })
-      .then((r) => r.json())
+    apiFetchJson(`/inventory/products?area=${encodeURIComponent(area)}`)
       .then((data) => {
         if (!active) return
         const rawList =

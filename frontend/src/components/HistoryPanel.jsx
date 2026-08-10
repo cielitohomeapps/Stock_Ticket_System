@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { apiFetchJson, apiDownload } from '../services/apiClient'
 
 const TYPE_LABEL = { EXIT: 'Salida', ENTRY: 'Entrada' }
 const STATUS_LABEL = {
   CREADO: 'Creado',
   EN_REVISION: 'En revisión',
   RECHAZADO: 'Rechazado',
+  PENDIENTE_CORRECCION: 'Pendiente corrección',
   STOCK_ACTUALIZADO: 'Stock actualizado',
   NOTIFICADO: 'Notificado',
 }
@@ -12,6 +14,7 @@ const STATUS_COLOR = {
   CREADO: 'var(--text-muted)',
   EN_REVISION: '#b07d00',
   RECHAZADO: 'var(--red)',
+  PENDIENTE_CORRECCION: '#e67e22',
   STOCK_ACTUALIZADO: 'var(--green)',
   NOTIFICADO: 'var(--green)',
 }
@@ -49,27 +52,16 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
     setLoading(true)
     setError(null)
     let active = true
-    const controller = new AbortController()
 
     try {
-      const res = await fetch(`${apiBase}/my-tickets`, {
-        headers: { Authorization: `Bearer ${firebaseToken}` },
-        signal: controller.signal,
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `Error ${res.status}`)
+      const data = await apiFetchJson('/my-tickets')
       if (active) setTickets(data.tickets || [])
     } catch (e) {
-      if (active && e.name !== 'AbortError') setError(e.message)
+      if (active) setError(e.message)
     } finally {
       if (active) setLoading(false)
     }
-
-    return () => {
-      active = false
-      controller.abort()
-    }
-  }, [apiBase, firebaseToken])
+  }, [])
 
   useEffect(() => {
     const cleanup = load()
@@ -89,16 +81,10 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
     const key = `${ticketId}-${format}`
     setDownloading(key)
     try {
-      const res = await fetch(`${apiBase}/tickets/${ticketId}/download?format=${format}`, {
-        headers: { Authorization: `Bearer ${firebaseToken}` },
-      })
-      if (!res.ok) { alert('Error al generar el documento.'); return }
-      const blob = await res.blob()
-      const link = document.createElement('a')
-      link.href = URL.createObjectURL(blob)
-      link.download = format === 'word' ? `ticket-${ticketId}.docx` : `ticket-${ticketId}.pdf`
-      link.click()
-      URL.revokeObjectURL(link.href)
+      const filename = format === 'word' ? `ticket-${ticketId}.docx` : `ticket-${ticketId}.pdf`
+      await apiDownload(`/tickets/${ticketId}/download?format=${format}`, filename)
+    } catch {
+      alert('Error al generar el documento.')
     } finally {
       setDownloading(null)
     }
@@ -108,12 +94,10 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
     if (sendingReview === ticketId) return
     setSendingReview(ticketId)
     try {
-      const res = await fetch(`${apiBase}/tickets/${ticketId}/send-review`, {
+      await apiFetchJson(`/tickets/${ticketId}/send-review`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${firebaseToken}` },
+        headers: { 'Content-Type': 'application/json' },
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
       load();
     } catch (e) {
       alert(`Error al enviar a revisión: ${e.message}`);
@@ -259,6 +243,12 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
                                 <span style={{ color: 'var(--red)' }}>{t.reviewComment}</span>
                               </div>
                             )}
+                            {t.correctionComment && (
+                              <div className="admin-detail-section">
+                                <strong>Corrección solicitada</strong>
+                                <span style={{ color: '#e67e22' }}>{t.correctionComment}</span>
+                              </div>
+                            )}
                             <div className="admin-detail-section admin-detail-full">
                               <strong>Productos ({t.items?.length || 0})</strong>
                               <ul className="admin-items-list">
@@ -270,7 +260,7 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
                                 ))}
                               </ul>
                             </div>
-                            {t.status === 'CREADO' && (
+                            {(t.status === 'CREADO' || t.status === 'PENDIENTE_CORRECCION') && (
                               <div className="admin-detail-section admin-detail-full" style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
                                 <button className="btn-admin" onClick={() => handleSendReview(t.id)} disabled={sendingReview === t.id}>
                                   {sendingReview === t.id ? 'Enviando…' : 'Enviar a revisión →'}

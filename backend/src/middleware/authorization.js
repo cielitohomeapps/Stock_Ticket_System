@@ -1,4 +1,4 @@
-const SUPERADMIN_EMAIL = "sistemasch17@gmail.com";
+const SUPERADMIN_EMAIL = (process.env.SUPERADMIN_EMAIL || "sistemasch17@gmail.com").toLowerCase().trim();
 
 function requireSuperAdmin(req, res, next) {
   if (req.user?.role !== "superadmin") {

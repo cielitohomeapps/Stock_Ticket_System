@@ -1,5 +1,5 @@
 const { listLocations, createLocation, updateLocation, deleteLocation } = require("../services/location.service");
-const { db } = require("../config/firebase");
+const { ticketDb: db } = require("../config/firebase");
 
 const locationController = {
   list: async (_req, res) => {

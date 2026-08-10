@@ -5,7 +5,7 @@ const cors = require("cors");
 const path = require("path");
 const swaggerJsdoc = require("swagger-jsdoc");
 const swaggerUi = require("swagger-ui-express");
-const {admin, db} = require("./config/firebase");
+const {admin, db} = require("./config/firebase"); // db = inventory DB (for usuarios lookup)
 
 // Controllers
 const ticketController = require("./controllers/ticketController");
@@ -24,6 +24,32 @@ const {
 } = require("./middleware/authorization");
 
 const ADMIN_ROLES = ["admin", "superadmin"];
+
+// ── User cache ────────────────────────────────────────────────────────────────
+// Cache Firestore user lookups to reduce latency and Firestore reads.
+// TTL: 5 minutes. Keyed by email.
+const userCache = new Map();
+const USER_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function getCachedUser(email) {
+  const entry = userCache.get(email);
+  if (entry && Date.now() - entry.ts < USER_CACHE_TTL_MS) {
+    return entry.data;
+  }
+  userCache.delete(email);
+  return null;
+}
+
+function setCachedUser(email, data) {
+  userCache.set(email, {data, ts: Date.now()});
+  // Evict stale entries periodically
+  if (userCache.size > 500) {
+    const now = Date.now();
+    for (const [key, val] of userCache) {
+      if (now - val.ts > USER_CACHE_TTL_MS) userCache.delete(key);
+    }
+  }
+}
 
 const {metricsStore} = require("./services/metrics.service");
 
@@ -118,16 +144,30 @@ async function requireUser(req, res, next) {
     if (email === SUPERADMIN_EMAIL) {
       role = "superadmin";
     } else {
-      // Look up user in Firestore usuarios collection
-      const userSnap = await db.collection("usuarios")
-          .where("email", "==", email)
-          .limit(1)
-          .get();
-      if (!userSnap.empty) {
+      // Check cache first
+      const cached = getCachedUser(email);
+      if (cached) {
+        role = cached.role;
+        areasPermitidas = cached.areasPermitidas;
+        nombre = cached.nombre;
+      } else {
+        // Look up user in Firestore usuarios collection
+        const userSnap = await db.collection("usuarios")
+            .where("email", "==", email)
+            .limit(1)
+            .get();
+        if (userSnap.empty) {
+          return res.status(403).json({
+            error: "Tu cuenta no está registrada en el sistema. Contacta al administrador para obtener acceso.",
+            code: "USER_NOT_REGISTERED",
+            email,
+          });
+        }
         const userData = userSnap.docs[0].data();
         role = userData.rol || userData.role || "usuario";
         areasPermitidas = Array.isArray(userData.areasPermitidas) ? userData.areasPermitidas : [];
         nombre = userData.nombre || "";
+        setCachedUser(email, {role, areasPermitidas, nombre});
       }
     }
 
@@ -321,6 +361,8 @@ app.get("/api/admin/tickets", requireUser, requireAdmin, ticketController.getAll
 app.post("/api/admin/tickets/:id/approve", requireUser, requireAdmin, ticketController.approve);
 
 app.post("/api/admin/tickets/:id/reject", requireUser, requireAdmin, ticketController.reject);
+
+app.post("/api/admin/tickets/:id/return", requireUser, requireAdmin, ticketController.returnToCreator);
 
 // ── Admin: users ──────────────────────────────────────────────────────────────
 app.get("/api/admin/users", requireUser, requireAdmin, userController.list);

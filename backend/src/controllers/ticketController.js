@@ -3,6 +3,7 @@ const {
   updateTicket,
   sendToReview,
   rejectTicket,
+  returnToCreator,
   markNotified,
   markNotificationError,
   getTicket,
@@ -265,6 +266,19 @@ const ticketController = {
       await rejectTicket(ticketId, req.user.id, comment);
       await addAuditEntry(ticketId, "TICKET_REJECTED", req.user.id, {comment: comment || ""});
       return res.json({ok: true, ticketId, status: "RECHAZADO"});
+    } catch (error) {
+      return res.status(400).json({error: error.message});
+    }
+  },
+
+  // POST /api/admin/tickets/:id/return
+  returnToCreator: async (req, res) => {
+    const ticketId = req.params.id;
+    const {comment} = req.body;
+    try {
+      await returnToCreator(ticketId, req.user.id, comment);
+      await addAuditEntry(ticketId, "TICKET_RETURNED_TO_CREATOR", req.user.id, {comment: comment || ""});
+      return res.json({ok: true, ticketId, status: "PENDIENTE_CORRECCION"});
     } catch (error) {
       return res.status(400).json({error: error.message});
     }

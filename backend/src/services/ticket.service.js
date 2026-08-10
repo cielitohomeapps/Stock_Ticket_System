@@ -1,4 +1,4 @@
-const {db, FieldValue} = require("../config/firebase");
+const {ticketDb: db, FieldValue} = require("../config/firebase");
 const {STATUS} = require("./stock.service");
 const {getProductById} = require("./inventory-api.service");
 const {ensureLocationRecord} = require("./location.service");
@@ -105,8 +105,8 @@ async function updateTicket(ticketId, userId, updateData) {
     }
 
     const ticket = ticketDoc.data();
-    if (ticket.status !== STATUS.CREATED) {
-      throw new Error("Solo se puede editar un ticket en estado CREADO.");
+    if (ticket.status !== STATUS.CREATED && ticket.status !== STATUS.PENDING_CORRECTION) {
+      throw new Error("Solo se puede editar un ticket en estado CREADO o PENDIENTE_CORRECCION.");
     }
 
     if (ticket.requestedBy !== userId) {
@@ -135,8 +135,8 @@ async function sendToReview(ticketId, requestedBy, clientToken) {
   }
 
   const ticket = ticketDocSnap.data();
-  if (ticket.status !== STATUS.CREATED) {
-    throw new Error("Solo se puede enviar a revision un ticket en estado CREADO.");
+  if (ticket.status !== STATUS.CREATED && ticket.status !== STATUS.PENDING_CORRECTION) {
+    throw new Error("Solo se puede enviar a revision un ticket en estado CREADO o PENDIENTE_CORRECCION.");
   }
 
   // For EXIT tickets, validate stock availability before sending to review
@@ -189,8 +189,8 @@ async function sendToReview(ticketId, requestedBy, clientToken) {
       throw new Error("Ticket no encontrado.");
     }
     const fresh = freshDoc.data();
-    if (fresh.status !== STATUS.CREATED) {
-      throw new Error("Solo se puede enviar a revision un ticket en estado CREADO.");
+    if (fresh.status !== STATUS.CREATED && fresh.status !== STATUS.PENDING_CORRECTION) {
+      throw new Error("Solo se puede enviar a revision un ticket en estado CREADO o PENDIENTE_CORRECCION.");
     }
 
     trx.update(ticketRef, {
@@ -198,6 +198,7 @@ async function sendToReview(ticketId, requestedBy, clientToken) {
       reviewSentBy: requestedBy,
       reviewSentAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
+      correctionComment: FieldValue.delete(),
     });
   });
 }
@@ -220,6 +221,29 @@ async function rejectTicket(ticketId, approverUserId, comment) {
       reviewedBy: approverUserId,
       reviewComment: comment || "",
       reviewedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  });
+}
+
+async function returnToCreator(ticketId, approverUserId, comment) {
+  const ticketRef = db.collection("tickets").doc(ticketId);
+  await db.runTransaction(async (trx) => {
+    const ticketDoc = await trx.get(ticketRef);
+    if (!ticketDoc.exists) {
+      throw new Error("Ticket no encontrado.");
+    }
+
+    const ticket = ticketDoc.data();
+    if (ticket.status !== STATUS.IN_REVIEW && ticket.status !== STATUS.CREATED) {
+      throw new Error("Solo se puede devolver un ticket en CREADO o EN_REVISION.");
+    }
+
+    trx.update(ticketRef, {
+      status: STATUS.PENDING_CORRECTION,
+      correctionComment: comment || "",
+      correctionSentBy: approverUserId,
+      correctionSentAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
   });
@@ -287,6 +311,7 @@ module.exports = {
   updateTicket,
   sendToReview,
   rejectTicket,
+  returnToCreator,
   markNotified,
   markNotificationError,
   getTicket,

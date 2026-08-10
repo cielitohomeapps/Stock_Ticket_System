@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { apiFetchJson } from '../services/apiClient'
 
 export default function StepArea({
   area,
@@ -48,27 +49,16 @@ export default function StepArea({
       const maxAttempts = 3
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-        const response = await fetch(`${apiBase}/inventory/areas`, {
-          headers: {
-            'Authorization': `Bearer ${firebaseToken}`,
-          },
-        })
-
-        const data = await response.json().catch(() => ({}))
-
-        if (response.ok) {
+        try {
+          const data = await apiFetchJson('/inventory/areas')
           return data
+        } catch (err) {
+          const isRateLimited = /429|demasiadas solicitudes|too many requests/i.test(err.message)
+          if (!isRateLimited || attempt === maxAttempts) {
+            throw err
+          }
+          await wait(500 * attempt)
         }
-
-        const message = data?.error || `Error ${response.status} cargando areas`
-        const isRateLimited = response.status === 429 || /demasiadas solicitudes|too many requests/i.test(message)
-
-        if (!isRateLimited || attempt === maxAttempts) {
-          throw new Error(message)
-        }
-
-        // Backoff corto para no saturar la API externa.
-        await wait(500 * attempt)
       }
 
       return { areas: [] }

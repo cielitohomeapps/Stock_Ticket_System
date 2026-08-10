@@ -1,4 +1,4 @@
-const {db, FieldValue} = require("../config/firebase");
+const {ticketDb: db, FieldValue} = require("../config/firebase");
 const {
   getProductById,
   discountProduct,
@@ -9,6 +9,7 @@ const STATUS = {
   CREATED: "CREADO",
   IN_REVIEW: "EN_REVISION",
   REJECTED: "RECHAZADO",
+  PENDING_CORRECTION: "PENDIENTE_CORRECCION",
   STOCK_UPDATED: "STOCK_ACTUALIZADO",
   NOTIFIED: "NOTIFICADO",
 };

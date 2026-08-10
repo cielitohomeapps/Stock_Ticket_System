@@ -1,15 +1,20 @@
-const {db, FieldValue} = require("../config/firebase");
+const {db, ticketDb, FieldValue} = require("../config/firebase");
+
+// usuarios collection: stays on inventory DB (shared with inventory system)
+const USUARIOS_DB = db;
+// config collection: moves to ticket DB (ticket-specific settings)
+const CONFIG_DB = ticketDb;
 
 const COLLECTION = "usuarios";
 const VALID_ROLES = ["superadmin", "admin", "jefe_area", "usuario"];
 
 async function listUsers() {
-  const snap = await db.collection(COLLECTION).orderBy("email").get();
+  const snap = await USUARIOS_DB.collection(COLLECTION).orderBy("email").get();
   return snap.docs.map((d) => ({id: d.id, ...d.data()}));
 }
 
 async function getUserByEmail(email) {
-  const snap = await db.collection(COLLECTION)
+  const snap = await USUARIOS_DB.collection(COLLECTION)
       .where("email", "==", email)
       .limit(1)
       .get();
@@ -18,7 +23,7 @@ async function getUserByEmail(email) {
 }
 
 async function getUserById(uid) {
-  const snap = await db.collection(COLLECTION).doc(uid).get();
+  const snap = await USUARIOS_DB.collection(COLLECTION).doc(uid).get();
   if (!snap.exists) return null;
   return {id: snap.id, ...snap.data()};
 }
@@ -31,7 +36,7 @@ async function createUser({email, rol, areasPermitidas, nombre}) {
     throw new Error(`Rol inválido. Roles válidos: ${VALID_ROLES.join(", ")}`);
   }
 
-  const existing = await db.collection(COLLECTION)
+  const existing = await USUARIOS_DB.collection(COLLECTION)
       .where("email", "==", email.toLowerCase().trim())
       .limit(1)
       .get();
@@ -39,7 +44,7 @@ async function createUser({email, rol, areasPermitidas, nombre}) {
     throw new Error("Ya existe un usuario con ese email.");
   }
 
-  const ref = db.collection(COLLECTION).doc();
+  const ref = USUARIOS_DB.collection(COLLECTION).doc();
   await ref.set({
     email: email.toLowerCase().trim(),
     rol: rol || "usuario",
@@ -56,7 +61,7 @@ async function updateUser(uid, {rol, areasPermitidas, nombre}) {
     throw new Error(`Rol inválido. Roles válidos: ${VALID_ROLES.join(", ")}`);
   }
 
-  const ref = db.collection(COLLECTION).doc(uid);
+  const ref = USUARIOS_DB.collection(COLLECTION).doc(uid);
   const snap = await ref.get();
   if (!snap.exists) throw new Error("Usuario no encontrado.");
 
@@ -72,7 +77,7 @@ async function updateUser(uid, {rol, areasPermitidas, nombre}) {
 }
 
 async function deleteUser(uid) {
-  const ref = db.collection(COLLECTION).doc(uid);
+  const ref = USUARIOS_DB.collection(COLLECTION).doc(uid);
   const snap = await ref.get();
   if (!snap.exists) throw new Error("Usuario no encontrado.");
   await ref.delete();
@@ -80,7 +85,7 @@ async function deleteUser(uid) {
 
 async function getEmailConfig() {
   try {
-    const snap = await db.collection("config").doc("emails").get();
+    const snap = await CONFIG_DB.collection("config").doc("emails").get();
     if (!snap.exists) {
       console.log("[getEmailConfig] Config doc does not exist, returning defaults");
       return {recipients: [], ccRecipients: [], fromName: "Cielito Home"};
@@ -93,7 +98,7 @@ async function getEmailConfig() {
 }
 
 async function saveEmailConfig({recipients, ccRecipients, fromName}) {
-  await db.collection("config").doc("emails").set(
+  await CONFIG_DB.collection("config").doc("emails").set(
       {
         recipients: Array.isArray(recipients) ? recipients : [],
         ccRecipients: Array.isArray(ccRecipients) ? ccRecipients : [],
