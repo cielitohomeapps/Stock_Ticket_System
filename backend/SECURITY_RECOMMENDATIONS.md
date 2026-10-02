@@ -9,18 +9,18 @@ Las siguientes credenciales estuvieron expuestas en `.env` y deben ser rotadas I
    - Generar una nueva clave privada
    - Reemplazar en el entorno de producción
 
-2. **Firebase API Key** (`INVENTORY_AUTH_API_KEY` = `REDACTED`)
+2. **Firebase API Key** (`INVENTORY_AUTH_API_KEY`)
    - Ir a Firebase Console → Project Settings → General → Web API Key
    - Restringir la API Key por aplicación (App Check) o regenerar
 
-3. **Resend API Key** (`RESEND_API_KEY` = `REDACTED`)
+3. **Resend API Key** (`RESEND_API_KEY`)
    - Ir a Resend.com → API Keys
    - Revocar la key actual y generar una nueva
 
 4. **Static Bearer Token** (`INVENTORY_STATIC_BEARER_TOKEN`)
    - Generar un nuevo token en el servicio de inventario
 
-5. **Firebase Test Password** (`FIREBASE_TEST_PASSWORD` = `REDACTED`)
+5. **Firebase Test Password** (`FIREBASE_TEST_PASSWORD`)
    - Cambiar la contraseña de la cuenta de prueba en Firebase Authentication
 
 ## Buenas Prácticas

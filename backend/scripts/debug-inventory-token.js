@@ -22,7 +22,11 @@ async function testWithUserCredentials() {
   console.log("\n=== Testing with User Credentials ===");
   
   const email = "sistemasch17@gmail.com";
-  const password = process.env.FIREBASE_TEST_PASSWORD || "REDACTED";
+  const password = process.env.FIREBASE_TEST_PASSWORD;
+  if (!password) {
+    console.error("FIREBASE_TEST_PASSWORD no está definida en .env");
+    return null;
+  }
   
   try {
     const signUpRes = await fetch(
