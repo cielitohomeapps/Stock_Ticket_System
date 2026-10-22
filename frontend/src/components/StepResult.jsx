@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import logoCH from '../assets/logoch.jpeg'
+import AlertBanner, { getAlertDetails } from './AlertBanner'
 
 const TYPE_LABEL = { EXIT: 'Salida', ENTRY: 'Entrada' }
 
@@ -26,21 +27,25 @@ const WordIcon = () => (
 
 export default function StepResult({ ticketId, area, ticketType, selectedItems, reason, firma, destino, apiBase, firebaseToken, onReset }) {
   const [downloading, setDownloading] = useState(null) // 'pdf' | 'word' | null
+  const [downloadError, setDownloadError] = useState(null)
 
   const download = async (format) => {
     setDownloading(format)
+    setDownloadError(null)
     try {
       const url = `${apiBase}/tickets/${ticketId}/download?format=${format}`
       const res = await fetch(url, {
         headers: { 'Authorization': `Bearer ${firebaseToken}` },
       })
-      if (!res.ok) { alert('Error al generar el documento. Inténtalo de nuevo.'); return }
+      if (!res.ok) { setDownloadError(new Error('Error al generar el documento. Inténtalo de nuevo.')); return }
       const blob = await res.blob()
       const link = document.createElement('a')
       link.href = URL.createObjectURL(blob)
       link.download = format === 'word' ? `ticket-${ticketId}.docx` : `ticket-${ticketId}.pdf`
       link.click()
       URL.revokeObjectURL(link.href)
+    } catch (error) {
+      setDownloadError(error)
     } finally {
       setDownloading(null)
     }
@@ -131,6 +136,7 @@ export default function StepResult({ ticketId, area, ticketType, selectedItems, 
         {/* Download */}
         <div className="download-section">
           <p className="download-label">Descargar copia del ticket</p>
+          {downloadError && <AlertBanner {...getAlertDetails(downloadError)} className="ticket-form-alert" />}
           <div className="download-btns">
             <button
               className="btn-download pdf"

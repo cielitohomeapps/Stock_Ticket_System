@@ -1,12 +1,22 @@
 const {admin} = require("../config/firebase");
+const {logger} = require("./observability.service");
 
 const HTTP_TIMEOUT_MS = Number(process.env.INVENTORY_HTTP_TIMEOUT_MS || 15000);
 const INVENTORY_SERVICE_UID = process.env.INVENTORY_SERVICE_UID || "inventory-service";
 
+function inventoryUnavailableError() {
+  const error = new Error(
+      "No se pudo conectar con el sistema de inventarios. Revisa que esté activo e inténtalo de nuevo.",
+  );
+  error.statusCode = 503;
+  error.code = "INVENTORY_UNAVAILABLE";
+  return error;
+}
+
 function getInventoryBaseUrl() {
   const fallbackUrl = "https://cielitohome-storage-backend.onrender.com/api";
   const configured = (process.env.INVENTORY_API_BASE_URL || "").trim();
-  const url = (!configured || configured.includes("localhost")) ? fallbackUrl : configured;
+  const url = configured || fallbackUrl;
   return url.replace(/\/$/, "");
 }
 
@@ -34,9 +44,17 @@ async function fetchJsonWithTimeout(url, options = {}) {
     return {response, payload};
   } catch (error) {
     if (error?.name === "AbortError") {
-      throw new Error(`Timeout invocando API externa (${HTTP_TIMEOUT_MS}ms).`);
+      logger.error("Tiempo de espera agotado al consultar dependencia externa", {
+        eventType: "INVENTORY_CONNECTION_FAILED",
+        module: "inventory",
+      }, error);
+      throw inventoryUnavailableError();
     }
-    throw error;
+    logger.error("Fallo la conexion con dependencia externa", {
+      eventType: "INVENTORY_CONNECTION_FAILED",
+      module: "inventory",
+    }, error);
+    throw inventoryUnavailableError();
   } finally {
     clearTimeout(timeout);
   }
@@ -62,7 +80,7 @@ async function getServiceToken({forceRefreshStatic = false} = {}) {
   try {
     customToken = await admin.auth().createCustomToken(INVENTORY_SERVICE_UID);
   } catch (error) {
-    console.error("[inventory-api] Failed to create custom token:", error.message);
+    logger.error("No se pudo crear el token de servicio de inventario", {eventType: "INVENTORY_TOKEN_CREATION_FAILED", module: "inventory"}, error);
     throw new Error(
         "No se pudo firmar token Firebase. Configura backend/service-account.json " +
         "o las variables FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL y FIREBASE_PRIVATE_KEY en .env.",
@@ -78,7 +96,7 @@ async function getServiceToken({forceRefreshStatic = false} = {}) {
   );
 
   if (!response.ok || !payload?.idToken) {
-    console.error("[inventory-api] Token exchange failed:", response.status, payload);
+    logger.error("Fallo el intercambio del token de inventario", {eventType: "INVENTORY_TOKEN_EXCHANGE_FAILED", module: "inventory", statusCode: response.status});
     throw new Error(
         `No se pudo obtener token de servicio para inventario (HTTP ${response.status}). ` +
         "Verifica que INVENTORY_SERVICE_UID y INVENTORY_AUTH_API_KEY sean correctos.",
@@ -87,7 +105,7 @@ async function getServiceToken({forceRefreshStatic = false} = {}) {
 
   cachedToken = payload.idToken;
   tokenExpiry = now + (Number(payload.expiresIn || 3600) * 1000);
-  console.log(`[inventory-api] Service token obtained, expires in ${payload.expiresIn || 3600}s`);
+  logger.info("Token de servicio de inventario renovado", {eventType: "INVENTORY_TOKEN_REFRESHED", module: "inventory", metadata: {expiresInSeconds: Number(payload.expiresIn || 3600)}});
   return cachedToken;
 }
 
@@ -136,21 +154,19 @@ async function callInventoryApi({path, method = "GET", body, clientToken, _retry
     const clientIsTokenError = isInvalidTokenError(clientAttempt.payload, clientAttempt.response.status);
     if (!clientIsTokenError) {
       // Retry on transient errors
-      if (isTransientError(clientAttempt.response.status) && _retryCount < 2) {
-        console.warn(`[inventory-api] Transient error ${clientAttempt.response.status} for ${path}, retrying (${_retryCount + 1}/2)...`);
+      if (method === "GET" && isTransientError(clientAttempt.response.status) && _retryCount < 2) {
+        logger.warn("Error transitorio de inventario; se reintentara", {eventType: "INVENTORY_RETRY", module: "inventory", statusCode: clientAttempt.response.status, route: path, metadata: {attempt: _retryCount + 1}});
         await new Promise((r) => setTimeout(r, 1000 * (_retryCount + 1)));
         return callInventoryApi({path, method, body, clientToken, _retryCount: _retryCount + 1});
       }
       const message = normalizeMessage(clientAttempt.payload, clientAttempt.response.status);
-      console.error(`[inventory-api] Client token request failed for ${path}:`, {
-        status: clientAttempt.response.status,
-        message,
-        payload: clientAttempt.payload,
-        requestBody: body,
-      });
-      throw new Error(message);
+      logger.error("La API de inventario rechazo una solicitud", {eventType: "INVENTORY_REQUEST_FAILED", module: "inventory", statusCode: clientAttempt.response.status, route: path});
+      if (isTransientError(clientAttempt.response.status)) {
+        throw inventoryUnavailableError();
+      }
+      throw new Error(`La API de inventario rechazo la operacion (HTTP ${clientAttempt.response.status}).`);
     }
-    console.warn(`[inventory-api] Client token invalid/expired for ${path} (status ${clientAttempt.response.status}), falling back to service token.`, clientAttempt.payload);
+    logger.warn("Token de usuario rechazado por inventario; se usara la cuenta de servicio", {eventType: "INVENTORY_CLIENT_TOKEN_REJECTED", module: "inventory", statusCode: clientAttempt.response.status, route: path});
   }
 
   let fallbackToken = await getServiceToken();
@@ -158,21 +174,14 @@ async function callInventoryApi({path, method = "GET", body, clientToken, _retry
 
   const staticToken = (process.env.INVENTORY_STATIC_BEARER_TOKEN || "").trim();
   if (staticToken && fallbackAttempt.response.status >= 400 && isInvalidTokenError(fallbackAttempt.payload, fallbackAttempt.response.status)) {
-    console.warn(`[inventory-api] Static service token invalid for ${path}, generating dynamic token.`);
+    logger.warn("Token estatico de inventario rechazado; se generara uno dinamico", {eventType: "INVENTORY_STATIC_TOKEN_REJECTED", module: "inventory", statusCode: fallbackAttempt.response.status, route: path});
     fallbackToken = await getServiceToken({forceRefreshStatic: true});
     fallbackAttempt = await requestWithToken(fallbackToken);
   }
 
   if (!fallbackAttempt.response.ok || fallbackAttempt.payload?.success === false) {
-    const rawText = fallbackAttempt.payload && typeof fallbackAttempt.payload === 'object'
-      ? JSON.stringify(fallbackAttempt.payload)
-      : String(fallbackAttempt.payload);
     const message = normalizeMessage(fallbackAttempt.payload, fallbackAttempt.response.status);
-    console.error(`[inventory-api] Service token request failed for ${path}:`, {
-      status: fallbackAttempt.response.status,
-      message,
-      payload: rawText,
-    });
+    logger.error("Fallo una solicitud de servicio a inventario", {eventType: "INVENTORY_SERVICE_REQUEST_FAILED", module: "inventory", statusCode: fallbackAttempt.response.status, route: path});
     const normalized = message
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
@@ -182,6 +191,9 @@ async function callInventoryApi({path, method = "GET", body, clientToken, _retry
           "Token de autenticación inválido en API de inventario. " +
           "Inicia sesión con Google en el frontend o configura INVENTORY_STATIC_BEARER_TOKEN en .env.",
       );
+    }
+    if (isTransientError(fallbackAttempt.response.status)) {
+      throw inventoryUnavailableError();
     }
     throw new Error(message);
   }
@@ -222,6 +234,9 @@ async function getProductsByArea(area, clientToken) {
         clientToken,
       });
     } catch (error) {
+      if (error.statusCode >= 500 || error.code === "INVENTORY_UNAVAILABLE") {
+        throw error;
+      }
       lastError = error;
     }
   }
@@ -306,21 +321,6 @@ async function getAvailableAreas(clientToken) {
 }
 
 async function discountProduct(productId, qty, reason, clientToken) {
-  // Validate product exists before attempting discount
-  try {
-    const product = await getProductById(productId, clientToken);
-    if (!product || (!product.data && !product.id)) {
-      throw new Error(`Producto ${productId} no encontrado en inventario.`);
-    }
-  } catch (validateErr) {
-    // If we can't even read the product, throw a clear error instead of a cryptic 500
-    if (validateErr.message.includes("no encontrado") || validateErr.message.includes("Token de autenticación")) {
-      throw validateErr;
-    }
-    // If validation fails for other reasons, log but continue with the discount attempt
-    console.warn(`[inventory-api] Product validation failed for ${productId}:`, validateErr.message);
-  }
-
   const body = {cantidad: qty};
   if (reason) body.motivo = reason;
   return callInventoryApi({
@@ -332,19 +332,6 @@ async function discountProduct(productId, qty, reason, clientToken) {
 }
 
 async function reingressProduct(productId, qty, reason, clientToken) {
-  // Validate product exists before attempting reingress
-  try {
-    const product = await getProductById(productId, clientToken);
-    if (!product || (!product.data && !product.id)) {
-      throw new Error(`Producto ${productId} no encontrado en inventario.`);
-    }
-  } catch (validateErr) {
-    if (validateErr.message.includes("no encontrado") || validateErr.message.includes("Token de autenticación")) {
-      throw validateErr;
-    }
-    console.warn(`[inventory-api] Product validation failed for ${productId}:`, validateErr.message);
-  }
-
   return callInventoryApi({
     path: `/productos/${productId}/reingreso`,
     method: "POST",

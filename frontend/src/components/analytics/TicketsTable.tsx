@@ -1,5 +1,5 @@
 /**
- * Tickets Table - paginated, sortable table of all tickets with export
+ * Tabla paginada y ordenable de solicitudes con exportación
  */
 
 import React, { useState, useMemo } from 'react';
@@ -87,10 +87,13 @@ export const TicketsTable: React.FC<TicketsTableProps> = ({ data, onExport }) =>
   const getStatusBadgeClass = (status: TicketStatus) => {
     switch (status) {
       case 'APROBADO':
+      case 'STOCK_ACTUALIZADO':
       case 'NOTIFICADO':
         return 'status-badge status-approved';
       case 'PENDIENTE':
       case 'ENVIADO':
+      case 'EN_REVISION':
+      case 'PENDIENTE_CORRECCION':
         return 'status-badge status-pending';
       case 'RECHAZADO':
         return 'status-badge status-rejected';
@@ -99,31 +102,50 @@ export const TicketsTable: React.FC<TicketsTableProps> = ({ data, onExport }) =>
     }
   };
 
+  const getStatusLabel = (status: TicketStatus) => {
+    const labels: Record<TicketStatus, string> = {
+      CREADO: 'Creado',
+      PENDIENTE: 'Pendiente',
+      ENVIADO: 'Enviado',
+      EN_REVISION: 'En revisión',
+      PENDIENTE_CORRECCION: 'Pendiente de corrección',
+      APROBADO: 'Aprobado',
+      STOCK_ACTUALIZADO: 'Stock actualizado',
+      NOTIFICADO: 'Notificado',
+      RECHAZADO: 'Rechazado',
+    };
+    return labels[status] || status;
+  };
+
   return (
     <div className="tickets-table-container">
       <div className="table-header">
-        <h3>Tickets</h3>
+        <h3>Solicitudes</h3>
         <div className="table-controls">
           <div className="filter-group">
-            <label>Status Filter:</label>
+            <label>Filtrar por estado:</label>
             <select
               value={statusFilter}
               onChange={(e) => {
-                setStatusFilter(e.target.value as any);
+                setStatusFilter(e.target.value as TicketStatus | 'ALL');
                 setCurrentPage(1);
               }}
               className="filter-select"
             >
-              <option value="ALL">All</option>
-              <option value="PENDIENTE">Pending</option>
-              <option value="ENVIADO">Sent</option>
-              <option value="APROBADO">Approved</option>
-              <option value="NOTIFICADO">Notified</option>
-              <option value="RECHAZADO">Rejected</option>
+              <option value="ALL">Todos</option>
+              <option value="CREADO">Creado</option>
+              <option value="PENDIENTE">Pendiente</option>
+              <option value="ENVIADO">Enviado</option>
+              <option value="EN_REVISION">En revisión</option>
+              <option value="PENDIENTE_CORRECCION">Pendiente de corrección</option>
+              <option value="APROBADO">Aprobado</option>
+              <option value="STOCK_ACTUALIZADO">Stock actualizado</option>
+              <option value="NOTIFICADO">Notificado</option>
+              <option value="RECHAZADO">Rechazado</option>
             </select>
           </div>
           <button onClick={handleExport} className="btn btn-primary btn-sm">
-            📥 Export CSV
+            📥 Exportar CSV
           </button>
         </div>
       </div>
@@ -133,26 +155,26 @@ export const TicketsTable: React.FC<TicketsTableProps> = ({ data, onExport }) =>
           <thead>
             <tr>
               <th onClick={() => handleSort('createdDate')} className="sortable">
-                Date
+                Fecha
                 {getSortIndicator('createdDate')}
               </th>
               <th onClick={() => handleSort('type')} className="sortable">
-                Type
+                Tipo
                 {getSortIndicator('type')}
               </th>
-              <th>Products</th>
-              <th>Area</th>
-              <th>Destination</th>
-              <th>Signature</th>
+              <th>Productos</th>
+              <th>Área</th>
+              <th>Destino</th>
+              <th>Firma</th>
               <th onClick={() => handleSort('status')} className="sortable">
-                Status
+                Estado
                 {getSortIndicator('status')}
               </th>
               <th
                 onClick={() => handleSort('approvalTimeHours')}
                 className="sortable text-right"
               >
-                Approval Hrs
+                Tiempo de aprobación (h)
                 {getSortIndicator('approvalTimeHours')}
               </th>
             </tr>
@@ -170,7 +192,7 @@ export const TicketsTable: React.FC<TicketsTableProps> = ({ data, onExport }) =>
                         ticket.type === 'EXIT' ? 'type-exit' : 'type-entry'
                       }`}
                     >
-                      {ticket.type}
+                      {ticket.type === 'EXIT' ? 'Salida' : 'Entrada'}
                     </span>
                   </td>
                   <td>
@@ -183,12 +205,12 @@ export const TicketsTable: React.FC<TicketsTableProps> = ({ data, onExport }) =>
                   <td>{ticket.firma}</td>
                   <td>
                     <span className={getStatusBadgeClass(ticket.status)}>
-                      {ticket.status}
+                      {getStatusLabel(ticket.status)}
                     </span>
                   </td>
                   <td className="text-right">
                     {ticket.approvalTimeHours !== undefined ? (
-                      <span>{ticket.approvalTimeHours.toLocaleString()}</span>
+                      <span>{ticket.approvalTimeHours.toLocaleString('es-MX')}</span>
                     ) : (
                       <span className="text-muted">—</span>
                     )}
@@ -198,7 +220,7 @@ export const TicketsTable: React.FC<TicketsTableProps> = ({ data, onExport }) =>
             ) : (
               <tr>
                 <td colSpan={8} className="text-center text-muted py-4">
-                  No tickets found
+                  No se encontraron solicitudes.
                 </td>
               </tr>
             )}
@@ -209,8 +231,8 @@ export const TicketsTable: React.FC<TicketsTableProps> = ({ data, onExport }) =>
       {/* Pagination */}
       <div className="pagination-container">
         <div className="pagination-info">
-          Showing {startIdx + 1} to {Math.min(endIdx, sortedData.length)} of{' '}
-          {sortedData.length} results
+          Mostrando {sortedData.length ? startIdx + 1 : 0} a {Math.min(endIdx, sortedData.length)} de{' '}
+          {sortedData.length} solicitudes
         </div>
         <div className="pagination-controls">
           <button
@@ -218,17 +240,17 @@ export const TicketsTable: React.FC<TicketsTableProps> = ({ data, onExport }) =>
             disabled={currentPage === 1}
             className="btn btn-sm"
           >
-            ← Previous
+            ← Anterior
           </button>
           <span className="pagination-indicator">
-            Page {currentPage} of {totalPages || 1}
+            Página {currentPage} de {totalPages || 1}
           </span>
           <button
             onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
             disabled={currentPage === totalPages || totalPages === 0}
             className="btn btn-sm"
           >
-            Next →
+            Siguiente →
           </button>
         </div>
       </div>

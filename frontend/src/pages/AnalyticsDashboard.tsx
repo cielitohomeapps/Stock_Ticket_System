@@ -18,6 +18,8 @@ import type {
   Ticket,
   TicketTableRow,
   CSVExportRow,
+  TicketType,
+  TicketStatus,
 } from '../types/analytics.types';
 import '../components/styles/analytics.css';
 
@@ -27,7 +29,7 @@ import '../components/styles/analytics.css';
 function getCurrentMonthDateRange() {
   const now = new Date();
   const startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-  const endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
   return { startDate, endDate };
 }
 
@@ -82,8 +84,8 @@ export function AnalyticsDashboard({ apiBase, firebaseToken }: { apiBase: string
 
         const service = getAnalyticsService();
 
-        const computedMetrics = await service.computeMetrics(filters);
         const fetchedTickets = await service.fetchTickets(filters);
+        const computedMetrics = await service.computeMetrics(filters, fetchedTickets);
 
         setMetrics(computedMetrics);
         setTickets(fetchedTickets);
@@ -91,7 +93,7 @@ export function AnalyticsDashboard({ apiBase, firebaseToken }: { apiBase: string
         const rows = service.formatTicketsForTable(fetchedTickets);
         setTicketRows(rows);
       } catch (err: any) {
-        const message = err instanceof Error ? err.message : 'Failed to fetch data';
+        const message = err instanceof Error ? err.message : 'No se pudieron cargar los datos.';
         setError(message);
         console.error('Dashboard error:', err);
       } finally {
@@ -107,8 +109,8 @@ export function AnalyticsDashboard({ apiBase, firebaseToken }: { apiBase: string
     const newStartDate = new Date(dateRangeStart + 'T00:00:00');
     const newEndDate = new Date(dateRangeEnd + 'T23:59:59');
 
-    if (newStartDate >= newEndDate) {
-      setError('Start date must be before end date');
+    if (Number.isNaN(newStartDate.getTime()) || Number.isNaN(newEndDate.getTime()) || newStartDate > newEndDate) {
+      setError('Verifica que las fechas sean válidas y que la fecha inicial no sea posterior a la final.');
       return;
     }
 
@@ -150,48 +152,83 @@ export function AnalyticsDashboard({ apiBase, firebaseToken }: { apiBase: string
       link.click();
       document.body.removeChild(link);
     } catch (err: any) {
-      const message = err instanceof Error ? err.message : 'Export failed';
+      const message = err instanceof Error ? err.message : 'No se pudo exportar el archivo.';
       setError(message);
       console.error('Export error:', err);
     }
   };
 
   // KPI data for cards
-  const kpiCards = useMemo(() => {
+  const requestKpiCards = useMemo(() => {
     if (!metrics) return [];
     return [
       {
         value: metrics.totalTickets,
-        label: 'Total Tickets',
+        label: 'Solicitudes',
         icon: '📋',
         color: 'primary' as const,
       },
       {
         value: metrics.totalExitTickets,
-        label: 'EXIT Tickets',
+        label: 'Solicitudes de salida',
         icon: '📤',
         color: 'danger' as const,
       },
       {
         value: metrics.totalEntryTickets,
-        label: 'ENTRY Tickets',
+        label: 'Solicitudes de entrada',
         icon: '📥',
         color: 'success' as const,
       },
       {
+        value: metrics.pendingApprovalCount,
+        label: 'Pendientes de resolución',
+        icon: '⏳',
+        color: 'warning' as const,
+      },
+      {
+        value: metrics.rejectedTicketCount,
+        label: 'Rechazadas',
+        icon: '🚫',
+        color: 'danger' as const,
+      },
+    ];
+  }, [metrics]);
+
+  const movementKpiCards = useMemo(() => {
+    if (!metrics) return [];
+    return [
+      {
+        value: metrics.appliedMovementCount,
+        label: 'Movimientos aplicados',
+        icon: '✅',
+        color: 'success' as const,
+      },
+      {
+        value: metrics.totalQuantityMoved,
+        label: 'Unidades movidas',
+        icon: '📦',
+        color: 'primary' as const,
+      },
+      {
         value: metrics.avgApprovalTimeHours,
-        label: 'Avg Approval Time (hrs)',
+        label: 'Tiempo promedio hasta aplicar (h)',
         icon: '⏱️',
         color: 'warning' as const,
       },
     ];
   }, [metrics]);
 
+  const availableAreas = useMemo(
+    () => Array.from(new Set(ticketRows.map((ticket) => ticket.area).filter((area) => area !== 'Sin área'))).sort(),
+    [ticketRows]
+  );
+
   if (loading && !metrics) {
     return (
       <div className="analytics-dashboard">
         <div style={{ textAlign: 'center', padding: '40px' }}>
-          <p>Loading analytics data...</p>
+          <p>Cargando datos de análisis...</p>
         </div>
       </div>
     );
@@ -201,8 +238,8 @@ export function AnalyticsDashboard({ apiBase, firebaseToken }: { apiBase: string
     <div className="analytics-dashboard">
       {/* Header */}
       <div className="dashboard-header">
-        <h1>📊 Ticket Analytics Dashboard</h1>
-        <p>Comprehensive overview of ticket movements, trends, and metrics</p>
+        <h1>📊 Panel de análisis de inventario</h1>
+        <p>Consulta solicitudes, movimientos aplicados y cantidades confirmadas.</p>
       </div>
 
       {/* Error Banner */}
@@ -224,7 +261,7 @@ export function AnalyticsDashboard({ apiBase, firebaseToken }: { apiBase: string
       {/* Filter Bar */}
       <div className="filter-bar">
         <div className="filter-group">
-          <label>Start Date</label>
+          <label>Fecha inicial</label>
           <input
             type="date"
             value={dateRangeStart}
@@ -234,7 +271,7 @@ export function AnalyticsDashboard({ apiBase, firebaseToken }: { apiBase: string
         </div>
 
         <div className="filter-group">
-          <label>End Date</label>
+          <label>Fecha final</label>
           <input
             type="date"
             value={dateRangeEnd}
@@ -244,59 +281,63 @@ export function AnalyticsDashboard({ apiBase, firebaseToken }: { apiBase: string
         </div>
 
         <div className="filter-group">
-          <label>Type</label>
+          <label>Tipo de solicitud</label>
           <select
             value={filters.type}
-            onChange={(e) => setFilters({ ...filters, type: e.target.value as any })}
+            onChange={(e) => setFilters({ ...filters, type: e.target.value as TicketType | 'ALL' })}
             className="filter-select"
           >
-            <option value="ALL">All</option>
-            <option value="EXIT">EXIT Only</option>
-            <option value="ENTRY">ENTRY Only</option>
+            <option value="ALL">Todos</option>
+            <option value="EXIT">Solo salidas</option>
+            <option value="ENTRY">Solo entradas</option>
           </select>
         </div>
 
         <div className="filter-group">
-          <label>Area</label>
+          <label>Área</label>
           <select
             value={filters.area}
             onChange={(e) => setFilters({ ...filters, area: e.target.value })}
             className="filter-select"
           >
-            <option value="ALL">All Areas</option>
-            {metrics?.movementByArea.map((area) => (
-              <option key={area.area} value={area.area}>
-                {area.area}
+            <option value="ALL">Todas las áreas</option>
+            {availableAreas.map((area) => (
+              <option key={area} value={area}>
+                {area}
               </option>
             ))}
           </select>
         </div>
 
         <div className="filter-group">
-          <label>Status</label>
+          <label>Estado</label>
           <select
             value={filters.status}
-            onChange={(e) => setFilters({ ...filters, status: e.target.value as any })}
+            onChange={(e) => setFilters({ ...filters, status: e.target.value as TicketStatus | 'ALL' | 'PENDING_APPROVAL' })}
             className="filter-select"
           >
-            <option value="ALL">All</option>
-            <option value="PENDING_APPROVAL">Pending Approval</option>
-            <option value="PENDIENTE">Pending</option>
-            <option value="ENVIADO">Sent</option>
-            <option value="APROBADO">Approved</option>
-            <option value="NOTIFICADO">Notified</option>
-            <option value="RECHAZADO">Rejected</option>
+            <option value="ALL">Todos</option>
+            <option value="PENDING_APPROVAL">Pendientes de resolución</option>
+            <option value="CREADO">Creado</option>
+            <option value="PENDIENTE">Pendiente</option>
+            <option value="ENVIADO">Enviado</option>
+            <option value="EN_REVISION">En revisión</option>
+            <option value="PENDIENTE_CORRECCION">Pendiente de corrección</option>
+            <option value="APROBADO">Aprobado</option>
+            <option value="STOCK_ACTUALIZADO">Stock actualizado</option>
+            <option value="NOTIFICADO">Notificado</option>
+            <option value="RECHAZADO">Rechazado</option>
           </select>
         </div>
 
         <div className="filter-group" style={{ justifyContent: 'flex-end' }}>
-          <label style={{ visibility: 'hidden', height: '12px' }}>Action</label>
+          <label style={{ visibility: 'hidden', height: '12px' }}>Aplicar</label>
           <button
             onClick={handleDateRangeChange}
             className="btn btn-primary"
             disabled={loading}
           >
-            Apply Filters
+            Aplicar filtros
           </button>
         </div>
       </div>
@@ -304,18 +345,33 @@ export function AnalyticsDashboard({ apiBase, firebaseToken }: { apiBase: string
       {/* Loading state for filters */}
       {loading && (
         <div style={{ textAlign: 'center', padding: '20px', color: '#666' }}>
-          Updating data...
+          Actualizando datos...
         </div>
       )}
 
       {/* KPI Row */}
       {metrics && (
         <>
-          <div className="kpi-row">
-            {kpiCards.map((kpi) => (
-              <KPICard key={kpi.label} data={kpi} icon={kpi.icon} color={kpi.color} />
-            ))}
-          </div>
+          <section className="analytics-section">
+            <h2 className="analytics-section-title">Solicitudes</h2>
+            <div className="kpi-row">
+              {requestKpiCards.map((kpi) => (
+                <KPICard key={kpi.label} data={kpi} icon={kpi.icon} color={kpi.color} />
+              ))}
+            </div>
+          </section>
+
+          <section className="analytics-section">
+            <h2 className="analytics-section-title">Movimientos de inventario confirmados</h2>
+            <p className="analytics-section-description">
+              Las cantidades de esta sección solo incluyen tickets con el movimiento aplicado y registrado.
+            </p>
+            <div className="kpi-row">
+              {movementKpiCards.map((kpi) => (
+                <KPICard key={kpi.label} data={kpi} icon={kpi.icon} color={kpi.color} />
+              ))}
+            </div>
+          </section>
 
           {/* Charts Row */}
           <div className="charts-row">

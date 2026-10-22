@@ -5,7 +5,8 @@
  */
 
 const {metricsStore} = require("./metrics.service");
-const {admin} = require("../config/firebase");
+const {admin, db} = require("../config/firebase");
+const {SUPERADMIN_EMAIL} = require("../middleware/authorization");
 
 /**
  * Container for all active WebSocket connections.
@@ -29,9 +30,20 @@ async function validateWsToken(token) {
 
   try {
     const decoded = await admin.auth().verifyIdToken(token);
+    const email = (decoded.email || "").toLowerCase().trim();
+    let role = SUPERADMIN_EMAIL && email === SUPERADMIN_EMAIL ? "superadmin" : null;
+    if (!role) {
+      const snapshot = await db.collection("usuarios").where("email", "==", email).limit(1).get();
+      if (!snapshot.empty) {
+        const data = snapshot.docs[0].data();
+        role = data.rol || data.role || "usuario";
+      }
+    }
+    if (!["admin", "superadmin"].includes(role)) return null;
     return {
       id: decoded.uid,
-      email: (decoded.email || "").toLowerCase().trim(),
+      email,
+      role,
     };
   } catch {
     return null;

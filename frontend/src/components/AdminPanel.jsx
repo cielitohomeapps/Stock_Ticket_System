@@ -76,8 +76,13 @@ function TicketsTab({ apiBase, firebaseToken }) {
   const [returnModal, setReturnModal] = useState(null) // { ticketId }
   const [returnComment, setReturnComment] = useState('')
   const [confirmApprove, setConfirmApprove] = useState(null) // { ticketId, type, items }
+  const [reconcileModal, setReconcileModal] = useState(null)
+  const [reconcileDecision, setReconcileDecision] = useState('')
+  const [reconcileReason, setReconcileReason] = useState('')
+  const [reconcileLoading, setReconcileLoading] = useState(false)
   const [expandedId, setExpandedId] = useState(null)
   const [page, setPage] = useState(1)
+  const [hasNextPage, setHasNextPage] = useState(false)
   const [downloading, setDownloading] = useState(null)
 
   const downloadTicket = async (ticketId, format, e) => {
@@ -98,15 +103,17 @@ function TicketsTab({ apiBase, firebaseToken }) {
     setLoading(true)
     setError(null)
     try {
-      const qs = filterStatus ? `?status=${filterStatus}` : ''
-      const data = await apiFetchJson(`/admin/tickets${qs}`)
+      const params = new URLSearchParams({ page: String(page), pageSize: String(TICKETS_PAGE_SIZE) })
+      if (filterStatus) params.set('status', filterStatus)
+      const data = await apiFetchJson(`/admin/tickets?${params}`)
       setTickets(data.tickets || [])
+      setHasNextPage(Boolean(data.pagination?.hasNext))
     } catch (e) {
       setError(e.message)
     } finally {
       setLoading(false)
     }
-  }, [filterStatus])
+  }, [filterStatus, page])
 
   useEffect(() => { load() }, [load])
   // Reset page when filter changes
@@ -125,6 +132,32 @@ function TicketsTab({ apiBase, firebaseToken }) {
     } catch (e) {
       setActionState((s) => ({ ...s, [ticketId]: 'error:' + e.message }))
       toast.error('Error al aprobar: ' + e.message)
+      if (e.code === 'STOCK_OUTCOME_UNKNOWN') await load()
+    }
+  }
+
+  const reconcileStock = async () => {
+    if (!reconcileModal || !reconcileDecision || !reconcileReason.trim() || reconcileLoading) return
+    setReconcileLoading(true)
+    try {
+      const result = await apiFetchJson(`/admin/tickets/${reconcileModal.ticketId}/reconcile-stock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: reconcileDecision, reason: reconcileReason }),
+      })
+      setReconcileModal(null)
+      setReconcileDecision('')
+      setReconcileReason('')
+      await load()
+      toast.success(
+        result.decision === 'APPLIED'
+          ? 'Conciliación registrada: el movimiento queda confirmado como aplicado. No se envió correo automáticamente.'
+          : 'Conciliación registrada: el movimiento se confirmó como no aplicado y el ticket vuelve a estar disponible para aprobación.'
+      )
+    } catch (e) {
+      toast.error('No se pudo registrar la conciliación: ' + e.message)
+    } finally {
+      setReconcileLoading(false)
     }
   }
 
@@ -229,10 +262,11 @@ function TicketsTab({ apiBase, firebaseToken }) {
               </tr>
             </thead>
             <tbody>
-              {tickets.slice((page - 1) * TICKETS_PAGE_SIZE, page * TICKETS_PAGE_SIZE).map((t) => {
+              {tickets.map((t) => {
                 const state = actionState[t.id] || ''
                 const isLoading = state === 'loading'
                 const isError = state.startsWith('error:')
+                const stockActionBlocked = t.stockProcessing || t.stockSyncStatus === 'UNKNOWN'
                 return (
                   <React.Fragment key={t.id}>
                     <tr
@@ -254,31 +288,51 @@ function TicketsTab({ apiBase, firebaseToken }) {
                       <td className="ticket-user">{t.requestedBy?.slice(0, 12) || '—'}</td>
                       <td>{formatDate(t.createdAt)}</td>
                       <td onClick={(e) => e.stopPropagation()}>
-                        {(t.status === 'EN_REVISION' || t.status === 'CREADO') && (
+                        {t.status === 'EN_REVISION' && (
                           <div className="action-btns">
                             <button
                               className="btn-approve"
-                              disabled={isLoading}
+                              disabled={isLoading || stockActionBlocked}
                               onClick={() => setConfirmApprove({ ticketId: t.id, type: t.type, items: t.items })}
                             >
                               {isLoading ? '…' : '✓ Aprobar'}
                             </button>
                             <button
                               className="btn-reject"
-                              disabled={isLoading}
+                              disabled={isLoading || stockActionBlocked}
                               onClick={() => { setRejectModal({ ticketId: t.id }); setRejectComment('') }}
                             >
                               ✕ Rechazar
                             </button>
                             <button
                               className="btn-secondary"
-                              disabled={isLoading}
+                              disabled={isLoading || stockActionBlocked}
                               onClick={() => { setReturnModal({ ticketId: t.id }); setReturnComment('') }}
                               title="Devolver al creador para corrección"
                             >
                               ↩ Devolver
                             </button>
+                            {t.stockSyncStatus === 'UNKNOWN' && (
+                              <button
+                                className="btn-admin-primary"
+                                disabled={isLoading}
+                                onClick={() => {
+                                  setReconcileModal({ ticketId: t.id, type: t.type, items: t.items })
+                                  setReconcileDecision('')
+                                  setReconcileReason('')
+                                }}
+                              >
+                                Conciliar inventario
+                              </button>
+                            )}
                           </div>
+                        )}
+                        {stockActionBlocked && (
+                          <span className="admin-inline-error" role="alert">
+                            {t.stockSyncStatus === 'UNKNOWN'
+                              ? 'Resultado de inventario incierto. Verifica el sistema antes de actuar.'
+                              : 'Movimiento de inventario en proceso.'}
+                          </span>
                         )}
                         {isError && <span className="admin-inline-error">{state.replace('error:', '')}</span>}
                       </td>
@@ -303,6 +357,15 @@ function TicketsTab({ apiBase, firebaseToken }) {
                               <strong>Firma</strong>
                               <span>{t.metadata?.firma || '—'}</span>
                             </div>
+                            {t.stockSyncStatus === 'UNKNOWN' && (
+                              <div className="admin-detail-section admin-detail-full" role="alert" style={{ color: 'var(--red)', borderColor: 'var(--red)' }}>
+                                <strong>Requiere conciliación de inventario</strong>
+                                <span>
+                                  El sistema no puede confirmar si el movimiento se aplicó. No apruebes, rechaces ni devuelvas este ticket de nuevo.
+                                  Verifica el historial del sistema de inventarios y sigue el procedimiento de conciliación de tu organización.
+                                </span>
+                              </div>
+                            )}
                             {t.reviewComment && (
                               <div className="admin-detail-section">
                                 <strong>Rechazo</strong>
@@ -357,8 +420,8 @@ function TicketsTab({ apiBase, firebaseToken }) {
         </div>
         <Pagination
           page={page}
-          totalPages={Math.max(1, Math.ceil(tickets.length / TICKETS_PAGE_SIZE))}
-          totalItems={tickets.length}
+          totalPages={page + (hasNextPage ? 1 : 0)}
+          totalItems={(page - 1) * TICKETS_PAGE_SIZE + tickets.length}
           onPrev={() => setPage((p) => p - 1)}
           onNext={() => setPage((p) => p + 1)}
         />
@@ -453,6 +516,81 @@ function TicketsTab({ apiBase, firebaseToken }) {
             <div className="modal-actions">
               <button className="btn-admin-secondary" onClick={() => setConfirmApprove(null)}>Cancelar</button>
               <button className="btn-approve" onClick={() => { const id = confirmApprove.ticketId; setConfirmApprove(null); approve(id); }}>Confirmar aprobación</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reconcileModal && (
+        <div className="modal-overlay" onClick={() => !reconcileLoading && setReconcileModal(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h4>Conciliar resultado de inventario</h4>
+                <p className="modal-sub">Ticket: {reconcileModal.ticketId}</p>
+              </div>
+              <button
+                className="modal-close-btn"
+                onClick={() => setReconcileModal(null)}
+                aria-label="Cerrar"
+                disabled={reconcileLoading}
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ padding: '0 0 8px', fontSize: '14px', lineHeight: '1.5' }}>
+              <p>
+                Revisa el historial del sistema de inventarios antes de continuar. Esta acción deja un registro auditable y no debe basarse solo en el mensaje de error.
+              </p>
+              <p><strong>Movimiento:</strong> {reconcileModal.type === 'EXIT' ? 'Salida' : 'Entrada'}</p>
+              <ul style={{ margin: '4px 0 12px 20px', padding: 0 }}>
+                {(reconcileModal.items || []).map((item, index) => (
+                  <li key={`${item.productId || item.id}-${index}`}>
+                    {item.name || item.nombre || item.productId || item.id} ×{item.qty}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <label className="admin-label" htmlFor="stock-reconciliation-decision">Resultado verificado</label>
+            <select
+              id="stock-reconciliation-decision"
+              className="admin-select"
+              value={reconcileDecision}
+              onChange={(event) => setReconcileDecision(event.target.value)}
+              disabled={reconcileLoading}
+            >
+              <option value="">Selecciona el resultado verificado</option>
+              <option value="APPLIED">Confirmé que el movimiento sí se aplicó</option>
+              <option value="NOT_APPLIED">Confirmé que el movimiento no se aplicó</option>
+            </select>
+            <label className="admin-label" htmlFor="stock-reconciliation-reason" style={{ marginTop: '14px' }}>
+              Justificación de la verificación (obligatoria)
+            </label>
+            <textarea
+              id="stock-reconciliation-reason"
+              className="admin-textarea"
+              rows={3}
+              maxLength={500}
+              value={reconcileReason}
+              onChange={(event) => setReconcileReason(event.target.value)}
+              placeholder="Indica qué revisaste en el sistema de inventarios y el resultado."
+              disabled={reconcileLoading}
+            />
+            <div className="modal-actions">
+              <button
+                className="btn-admin-secondary"
+                onClick={() => setReconcileModal(null)}
+                disabled={reconcileLoading}
+              >
+                Cancelar
+              </button>
+              <button
+                className="btn-admin-primary"
+                onClick={reconcileStock}
+                disabled={reconcileLoading || !reconcileDecision || !reconcileReason.trim()}
+              >
+                {reconcileLoading ? 'Guardando…' : 'Registrar conciliación verificada'}
+              </button>
             </div>
           </div>
         </div>
@@ -721,6 +859,9 @@ function LocationsTab({ apiBase, firebaseToken }) {
   const [form, setForm] = useState({ name: '', aliases: '' })
   const [saving, setSaving] = useState(false)
   const [editingLocation, setEditingLocation] = useState(null)
+  const [mergeLocation, setMergeLocation] = useState(null)
+  const [mergeTargetId, setMergeTargetId] = useState('')
+  const [merging, setMerging] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -774,7 +915,7 @@ function LocationsTab({ apiBase, firebaseToken }) {
   }
 
   const handleDelete = async (location) => {
-    if (!window.confirm(`Eliminar la ubicación "${location.name}"? Esta acción no se puede deshacer.`)) {
+    if (!window.confirm(`Eliminar "${location.name}" del catálogo? Los tickets históricos no se eliminan, pero sus reportes dejarán de poder asociarse automáticamente hasta que registres el nombre como alias de otra ubicación.`)) {
       return
     }
     try {
@@ -786,15 +927,48 @@ function LocationsTab({ apiBase, firebaseToken }) {
     }
   }
 
+  const handleMerge = async () => {
+    if (!mergeLocation || !mergeTargetId || merging) return
+    setMerging(true)
+    try {
+      const result = await apiFetchJson(`/locations/${mergeTargetId}/merge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceLocationId: mergeLocation.id }),
+      })
+      const targetName = result.location?.name || locations.find((location) => location.id === mergeTargetId)?.name
+      toast.success(`"${mergeLocation.name}" quedó unificada con "${targetName}". Los tickets históricos se conservan.`)
+      setMergeLocation(null)
+      setMergeTargetId('')
+      await load()
+    } catch (e) {
+      toast.error('No se pudieron unificar las ubicaciones: ' + e.message)
+    } finally {
+      setMerging(false)
+    }
+  }
+
   return (
     <div className="admin-tab">
       <div className="admin-toolbar">
         <h3 className="admin-tab-title">Ubicaciones canónicas</h3>
         <div className="admin-toolbar-right">
-          <button className="btn-admin-primary" onClick={() => { setShowForm(true); setForm({ name: '', aliases: '' }) }}>+ Nueva ubicación</button>
+          <button
+            className="btn-admin-primary"
+            onClick={() => {
+              setEditingLocation(null)
+              setForm({ name: '', aliases: '' })
+              setShowForm(true)
+            }}
+          >
+            + Nueva ubicación
+          </button>
           <button className="btn-admin-secondary" onClick={load} disabled={loading}>{loading ? '…' : '↺'}</button>
         </div>
       </div>
+      <p className="admin-inline-hint">
+        Los nombres y aliases se normalizan ignorando acentos y mayúsculas. Para consolidar duplicados, usa “Unificar”: sus aliases se trasladan a la ubicación elegida y los tickets anteriores se conservan.
+      </p>
 
       {error && <div className="admin-error">{error}</div>}
 
@@ -814,8 +988,16 @@ function LocationsTab({ apiBase, firebaseToken }) {
                   <td>{l.name}</td>
                   <td>{Array.isArray(l.aliases) ? l.aliases.join(', ') : ''}</td>
                   <td>{formatFirestoreTimestamp(l.createdAt)}</td>
-                  <td>
+                  <td className="location-actions">
                     <button className="btn-admin-secondary btn-small" type="button" onClick={() => handleEdit(l)}>Editar</button>
+                    <button
+                      className="btn-admin-secondary btn-small"
+                      type="button"
+                      onClick={() => { setMergeLocation(l); setMergeTargetId('') }}
+                      disabled={locations.length < 2}
+                    >
+                      Unificar
+                    </button>
                     <button className="btn-admin-danger btn-small" type="button" onClick={() => handleDelete(l)}>Eliminar</button>
                   </td>
                 </tr>
@@ -826,11 +1008,11 @@ function LocationsTab({ apiBase, firebaseToken }) {
       )}
 
       {showForm && (
-        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+        <div className="modal-overlay" onClick={resetForm}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h4>Nueva ubicación</h4>
-              <button className="modal-close-btn" onClick={() => setShowForm(false)}>×</button>
+              <h4>{editingLocation ? 'Editar ubicación' : 'Nueva ubicación'}</h4>
+              <button className="modal-close-btn" onClick={resetForm} aria-label="Cerrar">×</button>
             </div>
             <div className="form-group">
               <label className="admin-label">Nombre</label>
@@ -843,6 +1025,61 @@ function LocationsTab({ apiBase, firebaseToken }) {
             <div className="modal-actions">
               <button className="btn-admin-secondary" onClick={resetForm}>Cancelar</button>
               <button className="btn-admin-primary" onClick={saveLocation} disabled={saving}>{saving ? 'Guardando…' : editingLocation ? 'Guardar cambios' : 'Crear'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mergeLocation && (
+        <div className="modal-overlay" onClick={() => !merging && setMergeLocation(null)}>
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h4>Unificar ubicaciones</h4>
+              <button
+                className="modal-close-btn"
+                type="button"
+                onClick={() => setMergeLocation(null)}
+                disabled={merging}
+                aria-label="Cerrar"
+              >
+                ×
+              </button>
+            </div>
+            <p className="admin-merge-description">
+              Se eliminará del catálogo la entrada <strong>{mergeLocation.name}</strong> y sus aliases se agregarán a la ubicación elegida. Los tickets existentes no se modifican ni eliminan; sus reportes podrán agruparse por el nombre canónico.
+            </p>
+            <div className="form-group">
+              <label className="admin-label" htmlFor="location-merge-target">Ubicación canónica</label>
+              <select
+                id="location-merge-target"
+                className="admin-select"
+                value={mergeTargetId}
+                onChange={(event) => setMergeTargetId(event.target.value)}
+                disabled={merging}
+              >
+                <option value="">Selecciona el destino canónico</option>
+                {locations.filter((location) => location.id !== mergeLocation.id).map((location) => (
+                  <option key={location.id} value={location.id}>{location.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="modal-actions">
+              <button
+                className="btn-admin-secondary"
+                type="button"
+                onClick={() => setMergeLocation(null)}
+                disabled={merging}
+              >
+                Cancelar
+              </button>
+              <button
+                className="btn-admin-primary"
+                type="button"
+                onClick={handleMerge}
+                disabled={merging || !mergeTargetId}
+              >
+                {merging ? 'Unificando…' : 'Confirmar unificación'}
+              </button>
             </div>
           </div>
         </div>

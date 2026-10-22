@@ -1,6 +1,8 @@
 const {
   createTicket,
+  submitTicket,
   updateTicket,
+  updateAndSubmitTicket,
   sendToReview,
   rejectTicket,
   returnToCreator,
@@ -10,12 +12,44 @@ const {
   listTickets,
   listTicketsByUser,
 } = require("../services/ticket.service");
-const {applyStockMovementForTicket} = require("../services/stock.service");
+const {
+  applyStockMovementForTicket,
+  reconcileUnknownStockMovement,
+} = require("../services/stock.service");
 const {sendTicketNotification} = require("../services/notification.service");
 const {buildApprovedEmail} = require("../services/email.templates");
 const {addAuditEntry} = require("../services/audit.service");
 const {generatePdf, generateWord} = require("../services/document.service");
 const {getEmailConfig} = require("../services/user.service");
+const {canAccessTicket} = require("../services/ticket-integrity.service");
+const {logger} = require("../services/observability.service");
+
+function respondError(req, res, error, fallbackStatus = 500) {
+  const suppliedStatus = Number(error.statusCode);
+  const statusCode = Number.isInteger(suppliedStatus) && suppliedStatus >= 400 && suppliedStatus < 600
+    ? suppliedStatus
+    : fallbackStatus;
+  const context = {
+    eventType: "TICKET_OPERATION_FAILED",
+    module: "tickets",
+    requestId: req.id,
+    correlationId: req.correlationId,
+    ticketId: req.params?.id || null,
+    errorType: error.code || error.name,
+  };
+  if (statusCode >= 500) logger.error("Fallo en operacion de ticket", context, error);
+  else logger.warn("Operacion de ticket rechazada", context, error);
+  const body = {
+    error: statusCode >= 500 && process.env.NODE_ENV === "production"
+      ? "No se pudo completar la operación. Inténtalo más tarde o contacta al administrador."
+      : error.message || "No se pudo completar la operación.",
+    code: error.code || (statusCode >= 500 ? "INTERNAL_ERROR" : "TICKET_OPERATION_FAILED"),
+    requestId: req.id,
+  };
+  if (Array.isArray(error.details) && statusCode < 500) body.details = error.details;
+  if (error.ticketId) body.ticketId = error.ticketId;
+  return res.status(statusCode).json(body);
+}
 
 const ticketController = {
   // POST /api/tickets
@@ -35,19 +69,54 @@ const ticketController = {
         itemsCount: items?.length || 0,
       });
 
-      return res.status(201).json({ticketId: ticket.id});
+      return res.status(201).json({ticketId: ticket.id, status: ticket.status});
     } catch (error) {
-      return res.status(400).json({error: error.message});
+      return respondError(req, res, error);
+    }
+  },
+
+  // POST /api/tickets/submit - validates and persists an already submitted ticket atomically.
+  submit: async (req, res) => {
+    try {
+      const ticket = await submitTicket({
+        ...req.body,
+        requestedBy: req.user.id,
+      }, req.authToken, req.get("Idempotency-Key"));
+      if (!ticket.replayed) {
+        await addAuditEntry(ticket.id, "TICKET_SUBMITTED", req.user.id, {
+          type: req.body.type,
+          itemsCount: req.body.items?.length || 0,
+          requestId: req.id,
+          correlationId: req.correlationId,
+        });
+      }
+      return res.status(201).json({ticketId: ticket.id, status: ticket.status, requestId: req.id});
+    } catch (error) {
+      return respondError(req, res, error);
+    }
+  },
+
+  reconcileStock: async (req, res) => {
+    try {
+      const result = await reconcileUnknownStockMovement(
+          req.params.id,
+          req.user.id,
+          req.body,
+      );
+      return res.json({ok: true, ...result, requestId: req.id});
+    } catch (error) {
+      return respondError(req, res, error);
     }
   },
 
   // PUT /api/tickets/:id
   update: async (req, res) => {
     try {
-      const {type, items, metadata} = req.body;
+      const {type, items, assignedUsers, metadata} = req.body;
       await updateTicket(req.params.id, req.user.id, {
         type,
         items,
+        assignedUsers,
         metadata
       });
 
@@ -56,9 +125,25 @@ const ticketController = {
         itemsCount: items?.length || 0,
       });
 
-      return res.json({ok: true, ticketId: req.params.id});
+      return res.json({ok: true, ticketId: req.params.id, status: "CREADO"});
     } catch (error) {
-      return res.status(400).json({error: error.message});
+      return respondError(req, res, error);
+    }
+  },
+
+  // PUT /api/tickets/:id/submit
+  updateAndSubmit: async (req, res) => {
+    try {
+      const ticket = await updateAndSubmitTicket(req.params.id, req.user.id, req.body, req.authToken);
+      await addAuditEntry(ticket.id, "TICKET_UPDATED_AND_SUBMITTED", req.user.id, {
+        type: req.body.type,
+        itemsCount: req.body.items?.length || 0,
+        requestId: req.id,
+        correlationId: req.correlationId,
+      });
+      return res.json({ok: true, ticketId: ticket.id, status: ticket.status, requestId: req.id});
+    } catch (error) {
+      return respondError(req, res, error);
     }
   },
 
@@ -69,7 +154,7 @@ const ticketController = {
       await addAuditEntry(req.params.id, "TICKET_SENT_TO_REVIEW", req.user.id);
       return res.json({ok: true, ticketId: req.params.id, status: "EN_REVISION"});
     } catch (error) {
-      return res.status(400).json({error: error.message});
+      return respondError(req, res, error);
     }
   },
 
@@ -83,19 +168,45 @@ const ticketController = {
         return res.status(400).json({error: "decision debe ser APPROVE o REJECT"});
       }
 
+      const currentTicket = await getTicket(ticketId);
+      if (!currentTicket) {
+        return res.status(404).json({error: "Ticket no encontrado"});
+      }
+
       if (decision === "REJECT") {
         await rejectTicket(ticketId, req.user.id, comment);
         await addAuditEntry(ticketId, "TICKET_REJECTED", req.user.id, {comment: comment || ""});
         return res.json({ok: true, ticketId, status: "RECHAZADO"});
       }
 
+      if (currentTicket.status !== "EN_REVISION") {
+        return res.status(409).json({
+          error: "Solo se puede aprobar un ticket enviado a revision.",
+          code: "INVALID_TICKET_STATE",
+          requestId: req.id,
+        });
+      }
+
       await applyStockMovementForTicket(ticketId, req.user.id, req.authToken);
       await addAuditEntry(ticketId, "STOCK_MOVEMENT_APPLIED", req.user.id);
 
       const ticket = await getTicket(ticketId);
+      let emailConfig = {};
+      try {
+        emailConfig = await getEmailConfig();
+      } catch (emailConfigError) {
+        logger.warn("No se pudo obtener la configuracion de correo", {eventType: "EMAIL_CONFIG_FAILED", module: "notifications", requestId: req.id, correlationId: req.correlationId, ticketId}, emailConfigError);
+      }
+      const recipients = [
+        ...(ticket.assignedUsers || []),
+        ...(emailConfig?.recipients || []),
+      ].filter(Boolean);
+      if (recipients.length === 0) {
+        return res.json({ok: true, ticketId, status: "STOCK_ACTUALIZADO", notification: "SKIPPED_NO_RECIPIENTS"});
+      }
       try {
         await sendTicketNotification({
-          to: ticket.assignedUsers || [],
+          to: recipients,
           subject: `Ticket ${ticketId} aprobado y stock actualizado`,
           html: buildApprovedEmail({
             ticketId,
@@ -109,7 +220,7 @@ const ticketController = {
 
         await markNotified(ticketId);
         await addAuditEntry(ticketId, "TICKET_NOTIFIED", req.user.id, {
-          recipients: ticket.assignedUsers || [],
+          recipientCount: recipients.length,
         });
 
         return res.json({ok: true, ticketId, status: "NOTIFICADO"});
@@ -124,11 +235,11 @@ const ticketController = {
           ticketId,
           status: "STOCK_ACTUALIZADO",
           warning: "Stock actualizado, pero fallo el envio de correo",
-          notificationError: notificationError.message,
+          requestId: req.id,
         });
       }
     } catch (error) {
-      return res.status(400).json({error: error.message});
+      return respondError(req, res, error);
     }
   },
 
@@ -139,10 +250,13 @@ const ticketController = {
       if (!ticket) {
         return res.status(404).json({error: "Ticket no encontrado"});
       }
+      if (!canAccessTicket(ticket, req.user)) {
+        return res.status(403).json({error: "No tienes permiso para consultar este ticket", requestId: req.id});
+      }
 
       return res.json(ticket);
     } catch (error) {
-      return res.status(400).json({error: error.message});
+      return respondError(req, res, error);
     }
   },
 
@@ -152,6 +266,9 @@ const ticketController = {
     try {
       const ticket = await getTicket(req.params.id);
       if (!ticket) return res.status(404).json({error: "Ticket no encontrado"});
+      if (!canAccessTicket(ticket, req.user)) {
+        return res.status(403).json({error: "No tienes permiso para descargar este ticket", requestId: req.id});
+      }
 
       if (format === "word") {
         const buffer = await generateWord(ticket);
@@ -163,28 +280,27 @@ const ticketController = {
       // default: pdf
       generatePdf(ticket, res);
     } catch (error) {
-      return res.status(400).json({error: error.message});
+      return respondError(req, res, error);
     }
   },
 
   // GET /api/my-tickets
   getMyTickets: async (req, res) => {
     try {
-      const tickets = await listTicketsByUser(req.user.id);
-      return res.json({tickets});
+      const result = await listTicketsByUser(req.user.id, req.query);
+      return res.json(result);
     } catch (error) {
-      return res.status(400).json({error: error.message});
+      return respondError(req, res, error);
     }
   },
 
   // GET /api/admin/tickets
   getAll: async (req, res) => {
     try {
-      const {status, area} = req.query;
-      const tickets = await listTickets({status, area});
-      return res.json({tickets});
+      const result = await listTickets(req.query);
+      return res.json(result);
     } catch (error) {
-      return res.status(400).json({error: error.message});
+      return respondError(req, res, error);
     }
   },
 
@@ -195,21 +311,19 @@ const ticketController = {
       // Allow approving from CREADO state by auto-advancing to EN_REVISION first
       const ticket = await getTicket(ticketId);
       if (!ticket) return res.status(404).json({error: "Ticket no encontrado"});
-      
-      if (ticket.status === "CREADO") {
-        try {
-          await sendToReview(ticketId, req.user.id, req.authToken);
-        } catch (reviewError) {
-          console.error(`[approve] Error en sendToReview para ticket ${ticketId}:`, reviewError.message);
-          return res.status(400).json({error: `No se pudo enviar a revisión: ${reviewError.message}`});
-        }
+      if (ticket.status !== "EN_REVISION") {
+        return res.status(409).json({
+          error: "Solo se puede aprobar un ticket enviado a revision.",
+          code: "INVALID_TICKET_STATE",
+          requestId: req.id,
+        });
       }
 
       try {
         await applyStockMovementForTicket(ticketId, req.user.id, req.authToken);
       } catch (stockError) {
-        console.error(`[approve] Error en applyStockMovementForTicket para ticket ${ticketId}:`, stockError.message);
-        return res.status(400).json({error: `Error al aplicar movimiento de stock: ${stockError.message}`});
+        logger.error("Fallo la aplicacion del movimiento de stock", {eventType: "STOCK_MOVEMENT_FAILED", module: "inventory", requestId: req.id, correlationId: req.correlationId, ticketId}, stockError);
+        return respondError(req, res, stockError, 500);
       }
       
       await addAuditEntry(ticketId, "STOCK_MOVEMENT_APPLIED", req.user.id);
@@ -221,7 +335,7 @@ const ticketController = {
       try {
         emailConfig = await getEmailConfig();
       } catch (emailConfigError) {
-        console.error(`[approve] Error obteniendo email config para ticket ${ticketId}:`, emailConfigError.message);
+        logger.warn("No se pudo obtener la configuracion de correo", {eventType: "EMAIL_CONFIG_FAILED", module: "notifications", requestId: req.id, correlationId: req.correlationId, ticketId}, emailConfigError);
         // Continue without email config — notifications are non-critical
       }
       
@@ -230,6 +344,7 @@ const ticketController = {
         ...(emailConfig?.recipients || []),
       ].filter(Boolean);
 
+      let notificationFailed = false;
       try {
         if (allRecipients.length > 0) {
           await sendTicketNotification({
@@ -247,14 +362,26 @@ const ticketController = {
           await addAuditEntry(ticketId, "TICKET_NOTIFIED", req.user.id, {recipients: allRecipients});
         }
       } catch (notifErr) {
-        console.error(`[approve] Error en notificación para ticket ${ticketId}:`, notifErr.message);
+        logger.warn("Fallo la notificacion de un ticket aprobado", {eventType: "NOTIFICATION_ERROR", module: "notifications", requestId: req.id, correlationId: req.correlationId, ticketId}, notifErr);
         await markNotificationError(ticketId, notifErr.message);
+        notificationFailed = true;
       }
 
-      return res.json({ok: true, ticketId, status: "NOTIFICADO"});
+      if (notificationFailed) {
+        return res.status(207).json({
+          ok: false,
+          ticketId,
+          status: "STOCK_ACTUALIZADO",
+          warning: "El stock se actualizo, pero la notificacion fallo.",
+          requestId: req.id,
+        });
+      }
+      const finalStatus = allRecipients.length > 0
+        ? "NOTIFICADO"
+        : "STOCK_ACTUALIZADO";
+      return res.json({ok: true, ticketId, status: finalStatus});
     } catch (error) {
-      console.error(`[approve] Error inesperado para ticket ${ticketId}:`, error);
-      return res.status(400).json({error: error.message});
+      return respondError(req, res, error);
     }
   },
 
@@ -267,7 +394,7 @@ const ticketController = {
       await addAuditEntry(ticketId, "TICKET_REJECTED", req.user.id, {comment: comment || ""});
       return res.json({ok: true, ticketId, status: "RECHAZADO"});
     } catch (error) {
-      return res.status(400).json({error: error.message});
+      return respondError(req, res, error);
     }
   },
 
@@ -280,7 +407,7 @@ const ticketController = {
       await addAuditEntry(ticketId, "TICKET_RETURNED_TO_CREATOR", req.user.id, {comment: comment || ""});
       return res.json({ok: true, ticketId, status: "PENDIENTE_CORRECCION"});
     } catch (error) {
-      return res.status(400).json({error: error.message});
+      return respondError(req, res, error);
     }
   },
 };

@@ -1,5 +1,5 @@
 /**
- * Movement Reasons Table - displays breakdown by motivo (reason)
+ * Tabla de motivos de movimientos aplicados
  */
 
 import React from 'react';
@@ -11,31 +11,36 @@ interface MotivoBreakdownTableProps {
 }
 
 /**
- * Motivo Breakdown Table Component
- * Displays movement reasons with count and percentage distribution
+ * Muestra la distribución de motivos en movimientos confirmados.
  */
 export const MotivoBreakdownTable: React.FC<MotivoBreakdownTableProps> = ({ data }) => {
   return (
     <div className="table-container">
-      <h3>Movement Reasons Breakdown</h3>
+      <h3>Movimientos aplicados por motivo</h3>
       <div className="table-wrapper">
         <table className="analytics-table">
           <thead>
             <tr>
-              <th>Reason (Motivo)</th>
-              <th className="text-right">Count</th>
-              <th className="text-right">Percentage</th>
+              <th>Motivo</th>
+              <th className="text-right">Movimientos</th>
+              <th className="text-right">Porcentaje</th>
             </tr>
           </thead>
           <tbody>
-            {data.map((item, idx) => (
+            {data.length === 0 ? (
+              <tr>
+                <td colSpan={3} className="text-center text-muted py-4">
+                  No hay movimientos aplicados en este periodo.
+                </td>
+              </tr>
+            ) : data.map((item, idx) => (
               <tr key={item.motivo}>
                 <td>
                   <span className="row-number">{idx + 1}</span>
                   {item.motivo}
                 </td>
                 <td className="text-right">
-                  <span className="count-badge">{item.count.toLocaleString()}</span>
+                  <span className="count-badge">{item.count.toLocaleString('es-MX')}</span>
                 </td>
                 <td className="text-right">
                   <div className="percentage-bar">

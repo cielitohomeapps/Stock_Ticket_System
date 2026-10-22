@@ -1,266 +1,235 @@
-/**
- * @fileoverview Centralized metrics collection and aggregation service.
- * Tracks request metrics, error rates, active sessions, and latency histograms.
- * Thread-safe for high-frequency updates.
- */
-
-/**
- * Circular buffer implementation for fixed-size log storage.
- * Automatically overwrites oldest entries when full.
- * @template T
- */
 class CircularBuffer {
-  /**
-   * @param {number} size - Maximum number of entries
-   */
-  constructor(size = 1000) {
+  constructor(size = 2000) {
     this.size = size;
     this.buffer = [];
     this.index = 0;
   }
 
-  /**
-   * Add an entry to the buffer.
-   * @param {T} entry
-   */
   add(entry) {
-    if (this.buffer.length < this.size) {
-      this.buffer.push(entry);
-    } else {
+    if (this.buffer.length < this.size) this.buffer.push(entry);
+    else {
       this.buffer[this.index] = entry;
       this.index = (this.index + 1) % this.size;
     }
   }
 
-  /**
-   * Get all entries in insertion order.
-   * @returns {T[]}
-   */
   getAll() {
-    if (this.buffer.length < this.size) {
-      return [...this.buffer];
-    }
-    // Reconstruct order when buffer has wrapped
-    return [
-      ...this.buffer.slice(this.index),
-      ...this.buffer.slice(0, this.index),
-    ];
+    if (this.buffer.length < this.size) return [...this.buffer];
+    return [...this.buffer.slice(this.index), ...this.buffer.slice(0, this.index)];
   }
 
-  /**
-   * Get last N entries.
-   * @param {number} n
-   * @returns {T[]}
-   */
-  getLast(n) {
+  getLast(count) {
     const all = this.getAll();
-    return all.slice(Math.max(0, all.length - n));
+    return all.slice(Math.max(0, all.length - count));
   }
 }
 
-/**
- * Histogram for percentile calculation (simple, fixed-size version).
- * Maintains buckets for latency analysis.
- */
 class LatencyHistogram {
-  constructor(windowSize = 300) {
+  constructor(windowSize = 1000) {
     this.windowSize = windowSize;
     this.samples = [];
   }
 
-  /**
-   * Add a latency sample (in milliseconds).
-   * @param {number} ms
-   */
   add(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return;
     this.samples.push(ms);
-    // Keep only recent samples
-    if (this.samples.length > this.windowSize) {
-      this.samples = this.samples.slice(-this.windowSize);
-    }
+    if (this.samples.length > this.windowSize) this.samples = this.samples.slice(-this.windowSize);
   }
 
-  /**
-   * Calculate percentile.
-   * @param {number} percentile - 0-100
-   * @returns {number}
-   */
   percentile(percentile) {
-    if (this.samples.length === 0) return 0;
+    if (!this.samples.length) return 0;
     const sorted = [...this.samples].sort((a, b) => a - b);
-    const idx = Math.ceil((percentile / 100) * sorted.length) - 1;
-    return sorted[Math.max(0, idx)];
+    const index = Math.max(0, Math.ceil((percentile / 100) * sorted.length) - 1);
+    return sorted[index];
   }
 
-  /**
-   * Get average latency.
-   * @returns {number}
-   */
   average() {
-    if (this.samples.length === 0) return 0;
-    const sum = this.samples.reduce((a, b) => a + b, 0);
-    return Math.round(sum / this.samples.length);
+    if (!this.samples.length) return 0;
+    return Math.round(this.samples.reduce((sum, value) => sum + value, 0) / this.samples.length);
   }
 }
 
-/**
- * Global metrics store. Singleton instance shared across request handlers.
- */
 class MetricsStore {
-  constructor() {
-    // Request counters
+  constructor(options = {}) {
     this.totalRequests = 0;
     this.totalErrors = 0;
-    this.requestsByStatus = {}; // e.g., { "200": 150, "404": 5, "500": 2 }
-
-    // Active sessions
-    this.activeSessions = new Map(); // userId -> { connectedAt, lastActivity }
-
-    // Latency tracking
-    this.latencyHistogram = new LatencyHistogram(300);
-
-    // Event log (circular buffer)
-    this.eventLog = new CircularBuffer(1000);
-
-    // 30-second rolling window for request rate
+    this.requestsByStatus = {};
+    this.requestsByEndpoint = new Map();
+    this.activeSessions = new Map();
+    this.latencyHistogram = new LatencyHistogram(options.latencyWindow || 1000);
+    this.eventLog = new CircularBuffer(options.eventCapacity || Number(process.env.MONITORING_LOG_CAPACITY || 2000));
     this.requestWindow = [];
     this.errorWindow = [];
-
-    // Start cleanup interval for stale sessions
-    this._startSessionCleanup();
+    this.cleanupInterval = null;
+    if (options.startCleanup !== false) this._startSessionCleanup();
   }
 
-  /**
-   * Record a request.
-   * @param {number} statusCode
-   * @param {number} durationMs
-   * @param {string} [userId]
-   */
-  recordRequest(statusCode, durationMs, userId = null) {
-    this.totalRequests++;
-    this.requestsByStatus[statusCode] =
-      (this.requestsByStatus[statusCode] || 0) + 1;
-    this.latencyHistogram.add(durationMs);
-
+  recordRequest(input, durationMs, userId = null) {
+    const event = typeof input === "object"
+      ? input
+      : {statusCode: Number(input), durationMs: Number(durationMs), userId};
+    const statusCode = Number(event.statusCode || 0);
+    const latency = Number(event.durationMs || 0);
     const now = Date.now();
+    const routeKey = `${event.method || "?"} ${event.route || "unknown"}`;
+
+    this.totalRequests += 1;
+    this.requestsByStatus[statusCode] = (this.requestsByStatus[statusCode] || 0) + 1;
+    this.latencyHistogram.add(latency);
     this.requestWindow.push(now);
-    // Keep only last 30 seconds
-    this.requestWindow = this.requestWindow.filter((t) => now - t < 30000);
+    this.requestWindow = this.requestWindow.filter((value) => now - value < 60000);
 
+    const endpoint = this.requestsByEndpoint.get(routeKey) || {requests: 0, errors: 0, totalDurationMs: 0, maxDurationMs: 0};
+    endpoint.requests += 1;
+    endpoint.totalDurationMs += latency;
+    endpoint.maxDurationMs = Math.max(endpoint.maxDurationMs, latency);
     if (statusCode >= 400) {
-      this.totalErrors++;
+      this.totalErrors += 1;
+      endpoint.errors += 1;
       this.errorWindow.push(now);
-      this.errorWindow = this.errorWindow.filter((t) => now - t < 30000);
+      this.errorWindow = this.errorWindow.filter((value) => now - value < 60000);
     }
+    this.requestsByEndpoint.set(routeKey, endpoint);
 
-    if (userId) {
-      this.activeSessions.set(userId, {
-        connectedAt: this.activeSessions.get(userId)?.connectedAt || now,
+    if (event.userId) {
+      this.activeSessions.set(event.userId, {
+        connectedAt: this.activeSessions.get(event.userId)?.connectedAt || now,
         lastActivity: now,
       });
     }
   }
 
-  /**
-   * Record a business event (ticket created, user action, etc).
-   * @param {string} eventType - e.g., "TICKET_CREATED", "USER_LOGIN"
-   * @param {string} severity - "info" | "warn" | "error"
-   * @param {string} [message]
-   * @param {Object} [metadata]
-   */
-  recordEvent(eventType, severity = "info", message = null, metadata = {}) {
+  recordStructuredEvent(event = {}) {
     this.eventLog.add({
-      timestamp: new Date().toISOString(),
+      timestamp: event.timestamp || new Date().toISOString(),
+      level: String(event.level || event.severity || "INFO").toUpperCase(),
+      severity: String(event.level || event.severity || "INFO").toLowerCase(),
+      service: event.service || "ticket-automation-backend",
+      environment: event.environment || process.env.NODE_ENV || "development",
+      module: event.module || "application",
+      eventType: event.eventType || "APPLICATION_EVENT",
+      message: event.message || event.eventType || "Evento",
+      requestId: event.requestId || null,
+      correlationId: event.correlationId || event.requestId || null,
+      route: event.route || null,
+      method: event.method || null,
+      statusCode: event.statusCode ?? null,
+      durationMs: event.durationMs ?? null,
+      errorType: event.errorType || null,
+      stack: event.stack || null,
+      ticketId: event.ticketId || null,
+      metadata: event.metadata || null,
+    });
+  }
+
+  recordEvent(eventType, severity = "info", message = null, metadata = {}) {
+    this.recordStructuredEvent({
       eventType,
-      severity,
+      level: String(severity).toUpperCase(),
       message: message || eventType,
+      ticketId: metadata.ticketId,
+      requestId: metadata.requestId,
+      correlationId: metadata.correlationId,
+      module: metadata.module || "tickets",
       metadata,
     });
   }
 
-  /**
-   * Get current metrics snapshot.
-   * @returns {Object}
-   */
   getSnapshot() {
     const now = Date.now();
-    const requestRate = this.requestWindow.length / 30; // per second
-    const errorRate = this.errorWindow.length / 30; // per second
+    this.requestWindow = this.requestWindow.filter((value) => now - value < 60000);
+    this.errorWindow = this.errorWindow.filter((value) => now - value < 60000);
+    const endpoints = [...this.requestsByEndpoint.entries()].map(([route, stats]) => ({
+      route,
+      requests: stats.requests,
+      errors: stats.errors,
+      errorRate: stats.requests ? Number((stats.errors / stats.requests).toFixed(4)) : 0,
+      averageLatencyMs: stats.requests ? Math.round(stats.totalDurationMs / stats.requests) : 0,
+      maxLatencyMs: stats.maxDurationMs,
+    })).sort((a, b) => b.errorRate - a.errorRate || b.requests - a.requests).slice(0, 20);
+
+    const recentErrorRatio = this.requestWindow.length ? this.errorWindow.length / this.requestWindow.length : 0;
+    const latencyP95 = this.latencyHistogram.percentile(95);
+    const errorWarn = Number(process.env.MONITORING_ERROR_RATE_WARN || 0.05);
+    const errorCritical = Number(process.env.MONITORING_ERROR_RATE_CRITICAL || 0.2);
+    const latencyWarn = Number(process.env.MONITORING_LATENCY_WARN_MS || 1000);
+    const latencyCritical = Number(process.env.MONITORING_LATENCY_CRITICAL_MS || 3000);
+    const status = recentErrorRatio >= errorCritical || latencyP95 >= latencyCritical
+      ? "INCIDENT"
+      : recentErrorRatio >= errorWarn || latencyP95 >= latencyWarn
+        ? "DEGRADED"
+        : "HEALTHY";
 
     return {
-      requestsPerSec: Math.round(requestRate * 100) / 100,
-      errorsPerSec: Math.round(errorRate * 100) / 100,
+      status,
+      requestsPerSec: Number((this.requestWindow.length / 60).toFixed(2)),
+      errorsPerSec: Number((this.errorWindow.length / 60).toFixed(2)),
+      recentErrorRate: Number(recentErrorRatio.toFixed(4)),
       activeUsers: this.activeSessions.size,
-      latencyP95: this.latencyHistogram.percentile(95),
+      latencyP95,
       latencyAvg: this.latencyHistogram.average(),
       totalRequests: this.totalRequests,
       totalErrors: this.totalErrors,
-      requestsByStatus: this.requestsByStatus,
+      requestsByStatus: {...this.requestsByStatus},
+      endpoints,
+      thresholds: {errorWarn, errorCritical, latencyWarn, latencyCritical},
     };
   }
 
-  /**
-   * Get recent events (for log streaming).
-   * @param {number} [count=50]
-   * @param {string} [severity] - filter by severity (optional)
-   * @returns {Array}
-   */
   getRecentEvents(count = 50, severity = null) {
-    let events = this.eventLog.getLast(count);
-    if (severity) {
-      events = events.filter((e) => e.severity === severity);
-    }
+    let events = this.eventLog.getLast(Math.min(500, Math.max(1, Number(count) || 50)));
+    if (severity) events = events.filter((event) => event.level === String(severity).toUpperCase());
     return events;
   }
 
-  /**
-   * Register a WebSocket session.
-   * @param {string} sessionId
-   * @param {string} userId
-   */
-  registerSession(sessionId, userId) {
-    const now = Date.now();
-    this.activeSessions.set(userId, {
-      connectedAt: now,
-      lastActivity: now,
-    });
+  queryEvents(filters = {}) {
+    let events = this.eventLog.getAll().slice().reverse();
+    const level = String(filters.level || "").toUpperCase();
+    const search = String(filters.search || "").trim().toLowerCase();
+    const fromMs = filters.from ? new Date(filters.from).getTime() : null;
+    const toMs = filters.to ? new Date(filters.to).getTime() : null;
+    if (level) events = events.filter((event) => event.level === level);
+    if (filters.service) events = events.filter((event) => event.service === filters.service);
+    if (filters.module) events = events.filter((event) => event.module === filters.module);
+    if (filters.eventType) events = events.filter((event) => event.eventType === filters.eventType);
+    if (filters.requestId) events = events.filter((event) => event.requestId === filters.requestId || event.correlationId === filters.requestId);
+    if (filters.ticketId) events = events.filter((event) => event.ticketId === filters.ticketId);
+    if (Number.isFinite(fromMs)) events = events.filter((event) => new Date(event.timestamp).getTime() >= fromMs);
+    if (Number.isFinite(toMs)) events = events.filter((event) => new Date(event.timestamp).getTime() <= toMs);
+    if (search) {
+      events = events.filter((event) => [event.message, event.eventType, event.route, event.errorType]
+        .filter(Boolean).some((value) => String(value).toLowerCase().includes(search)));
+    }
+
+    const page = Math.max(1, Number(filters.page) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number(filters.pageSize) || 25));
+    const start = (page - 1) * pageSize;
+    return {
+      logs: events.slice(start, start + pageSize),
+      pagination: {page, pageSize, total: events.length, hasNext: start + pageSize < events.length},
+    };
   }
 
-  /**
-   * Unregister a WebSocket session.
-   * @param {string} userId
-   */
+  registerSession(_sessionId, userId) {
+    const now = Date.now();
+    this.activeSessions.set(userId, {connectedAt: now, lastActivity: now});
+  }
+
   unregisterSession(userId) {
     this.activeSessions.delete(userId);
   }
 
-  /**
-   * Clean up stale sessions (no activity > 5 minutes).
-   * @private
-   */
   _startSessionCleanup() {
-    setInterval(() => {
+    this.cleanupInterval = setInterval(() => {
       const now = Date.now();
-      const STALE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
-
       for (const [userId, session] of this.activeSessions.entries()) {
-        if (now - session.lastActivity > STALE_THRESHOLD) {
-          this.activeSessions.delete(userId);
-        }
+        if (now - session.lastActivity > 5 * 60 * 1000) this.activeSessions.delete(userId);
       }
-    }, 60000); // Check every minute
+    }, 60000);
+    this.cleanupInterval.unref?.();
   }
 }
 
-/**
- * Singleton instance of the metrics store.
- * @type {MetricsStore}
- */
 const metricsStore = new MetricsStore();
 
-module.exports = {
-  metricsStore,
-  MetricsStore,
-  CircularBuffer,
-  LatencyHistogram,
-};
+module.exports = {metricsStore, MetricsStore, CircularBuffer, LatencyHistogram};

@@ -14,6 +14,15 @@ function getLogoDataUri() {
 
 const LOGO_URI = getLogoDataUri();
 
+function escapeHtml(value) {
+  return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+}
+
 // ── Colores Cielito Home ──────────────────────────────────────────────────────
 const C = {
   green:      "#2d6e62",
@@ -106,7 +115,7 @@ function statusBadge(label, approved = true) {
   const bg  = approved ? C.green   : C.red;
   const bg2 = approved ? "#e8f4f1" : C.redLight;
   const fg  = approved ? C.green   : C.red;
-  return `<span style="display:inline-block;padding:4px 14px;border-radius:99px;background:${bg2};color:${fg};border:1.5px solid ${bg};font-size:13px;font-weight:600;letter-spacing:0.04em;">${label}</span>`;
+  return `<span style="display:inline-block;padding:4px 14px;border-radius:99px;background:${bg2};color:${fg};border:1.5px solid ${bg};font-size:13px;font-weight:600;letter-spacing:0.04em;">${escapeHtml(label)}</span>`;
 }
 
 // ── Fila de datos ─────────────────────────────────────────────────────────────
@@ -114,10 +123,10 @@ function dataRow(label, value) {
   return `
   <tr>
     <td style="padding:8px 0;border-bottom:1px solid ${C.border};width:38%;vertical-align:top;">
-      <span style="font-size:13px;color:${C.textMuted};font-weight:500;">${label}</span>
+      <span style="font-size:13px;color:${C.textMuted};font-weight:500;">${escapeHtml(label)}</span>
     </td>
     <td style="padding:8px 0 8px 16px;border-bottom:1px solid ${C.border};vertical-align:top;">
-      <span style="font-size:14px;color:${C.text};font-weight:600;">${value || "—"}</span>
+      <span style="font-size:14px;color:${C.text};font-weight:600;">${escapeHtml(value || "—")}</span>
     </td>
   </tr>`;
 }
@@ -136,9 +145,9 @@ function itemsTable(items) {
     const bg   = i % 2 === 0 ? C.white : C.bg;
     return `
     <tr style="background:${bg};">
-      <td style="padding:9px 12px;font-size:13px;color:${C.text};border-bottom:1px solid ${C.border};">${name}</td>
-      <td style="padding:9px 12px;font-size:13px;color:${C.textMid};border-bottom:1px solid ${C.border};font-family:monospace;">${item.productId || item.sku || "—"}</td>
-      <td style="padding:9px 12px;font-size:14px;color:${C.green};font-weight:700;border-bottom:1px solid ${C.border};text-align:right;">${qty}</td>
+      <td style="padding:9px 12px;font-size:13px;color:${C.text};border-bottom:1px solid ${C.border};">${escapeHtml(name)}</td>
+      <td style="padding:9px 12px;font-size:13px;color:${C.textMid};border-bottom:1px solid ${C.border};font-family:monospace;">${escapeHtml(item.productId || item.sku || "—")}</td>
+      <td style="padding:9px 12px;font-size:14px;color:${C.green};font-weight:700;border-bottom:1px solid ${C.border};text-align:right;">${escapeHtml(qty)}</td>
     </tr>`;
   }).join("");
 
@@ -174,7 +183,7 @@ function buildApprovedEmail({ticketId, type, area, approvedBy, items, status = "
     <div style="margin-bottom:20px;">${statusBadge(status)}</div>
 
     <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-      ${dataRow("N° de Ticket", `<span style="font-family:monospace;">${ticketId}</span>`)}
+      ${dataRow("N° de Ticket", ticketId)}
       ${dataRow("Tipo", type)}
       ${area ? dataRow("Área", area) : ""}
       ${dataRow("Aprobado por", approvedBy)}
@@ -218,7 +227,7 @@ function buildRejectedEmail({ticketId, type, area, rejectedBy, items, comment}) 
     <div style="margin-bottom:20px;">${statusBadge("Rechazado", false)}</div>
 
     <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-      ${dataRow("N° de Ticket", `<span style="font-family:monospace;">${ticketId}</span>`)}
+      ${dataRow("N° de Ticket", ticketId)}
       ${dataRow("Tipo", type)}
       ${area ? dataRow("Área", area) : ""}
       ${dataRow("Rechazado por", rejectedBy)}
@@ -229,10 +238,10 @@ function buildRejectedEmail({ticketId, type, area, rejectedBy, items, comment}) 
     ${comment ? `
     <div style="margin-top:24px;">
       <p style="margin:0 0 8px;font-size:13px;color:${C.textMuted};font-weight:500;text-transform:uppercase;letter-spacing:0.06em;">Motivo</p>
-      <div style="padding:14px 18px;background:${C.redLight};border-left:4px solid ${C.red};border-radius:0 8px 8px 0;font-size:14px;color:${C.text};">${comment}</div>
+      <div style="padding:14px 18px;background:${C.redLight};border-left:4px solid ${C.red};border-radius:0 8px 8px 0;font-size:14px;color:${C.text};">${escapeHtml(comment)}</div>
     </div>` : ""}
   `;
   return wrapEmail(body);
 }
 
-module.exports = {buildApprovedEmail, buildRejectedEmail};
+module.exports = {buildApprovedEmail, buildRejectedEmail, escapeHtml};

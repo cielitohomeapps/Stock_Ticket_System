@@ -4,6 +4,17 @@ const {
   getAvailableAreas,
 } = require("../services/inventory-api.service");
 
+function respondInventoryError(res, error) {
+  const errorStatus = Number(error.statusCode);
+  const status = Number.isInteger(errorStatus) && errorStatus >= 400 && errorStatus < 600
+    ? errorStatus
+    : 400;
+  return res.status(status).json({
+    error: error.message || "No se pudo consultar el inventario.",
+    ...(error.code ? {code: error.code} : {}),
+  });
+}
+
 const inventoryController = {
   // GET /api/inventory/products/:id
   getProduct: async (req, res) => {
@@ -11,7 +22,7 @@ const inventoryController = {
       const data = await getProductById(req.params.id, req.authToken);
       return res.json(data);
     } catch (error) {
-      return res.status(400).json({error: error.message});
+      return respondInventoryError(res, error);
     }
   },
 
@@ -21,7 +32,7 @@ const inventoryController = {
       const data = await getProductsByArea(req.query.area, req.authToken);
       return res.json(data);
     } catch (error) {
-      return res.status(400).json({error: error.message});
+      return respondInventoryError(res, error);
     }
   },
 
@@ -31,7 +42,7 @@ const inventoryController = {
       const areas = await getAvailableAreas(_req.authToken);
       return res.json({areas});
     } catch (error) {
-      return res.status(400).json({error: error.message});
+      return respondInventoryError(res, error);
     }
   },
 };

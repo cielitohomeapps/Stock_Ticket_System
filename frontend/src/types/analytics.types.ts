@@ -6,8 +6,17 @@
 /** Ticket type: EXIT (outgoing) or ENTRY (incoming) */
 export type TicketType = 'EXIT' | 'ENTRY';
 
-/** Ticket status options */
-export type TicketStatus = 'PENDIENTE' | 'ENVIADO' | 'APROBADO' | 'NOTIFICADO' | 'RECHAZADO';
+/** Ticket statuses used by the workflow and analytics filters */
+export type TicketStatus =
+  | 'CREADO'
+  | 'PENDIENTE'
+  | 'ENVIADO'
+  | 'EN_REVISION'
+  | 'PENDIENTE_CORRECCION'
+  | 'APROBADO'
+  | 'STOCK_ACTUALIZADO'
+  | 'NOTIFICADO'
+  | 'RECHAZADO';
 
 /** Single item within a ticket */
 export interface TicketItem {
@@ -40,6 +49,7 @@ export interface Ticket {
   assignedUsers: string[];
   notificationStatus: string;
   stockMovementId: string;
+  stockOutcomeResolution?: 'APPLIED' | 'NOT_APPLIED' | string;
   stockProcessing: boolean;
 }
 
@@ -93,10 +103,12 @@ export interface DashboardMetrics {
   entryPercentage: number;
   avgApprovalTimeHours: number;
   pendingApprovalCount: number;
+  rejectedTicketCount: number;
+  appliedMovementCount: number;
 
   // Product data
   topProducts: ProductMovement[];
-  totalProductsMoved: number;
+  totalQuantityMoved: number;
 
   // Area & Motivo
   movementByArea: AreaMovement[];

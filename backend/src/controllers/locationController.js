@@ -1,13 +1,31 @@
-const { listLocations, createLocation, updateLocation, deleteLocation } = require("../services/location.service");
+const {
+  listLocations,
+  createLocation,
+  updateLocation,
+  mergeLocations,
+  deleteLocation,
+} = require("../services/location.service");
+const {canonicalizeLocationName} = require("../services/location-normalization");
 const { ticketDb: db } = require("../config/firebase");
+
+function respondLocationError(res, error) {
+  const suppliedStatus = Number(error.statusCode);
+  const statusCode = Number.isInteger(suppliedStatus) && suppliedStatus >= 400 && suppliedStatus < 600
+    ? suppliedStatus
+    : 400;
+  return res.status(statusCode).json({
+    error: error.message || "No se pudo completar la operación de ubicación.",
+    ...(error.code ? {code: error.code} : {}),
+  });
+}
 
 const locationController = {
   list: async (_req, res) => {
     try {
-      const locations = await listLocations(500);
+      const locations = await listLocations(1000);
       return res.json({ locations });
     } catch (error) {
-      return res.status(400).json({ error: error.message });
+      return respondLocationError(res, error);
     }
   },
 
@@ -17,7 +35,7 @@ const locationController = {
       const created = await createLocation({ name, aliases });
       return res.status(201).json(created);
     } catch (error) {
-      return res.status(400).json({ error: error.message });
+      return respondLocationError(res, error);
     }
   },
 
@@ -28,7 +46,17 @@ const locationController = {
       const updated = await updateLocation(id, { name, aliases });
       return res.json(updated);
     } catch (error) {
-      return res.status(400).json({ error: error.message });
+      return respondLocationError(res, error);
+    }
+  },
+
+  merge: async (req, res) => {
+    try {
+      const targetId = req.params.id;
+      const merged = await mergeLocations(targetId, req.body.sourceLocationId, req.user?.id);
+      return res.json({ok: true, location: merged});
+    } catch (error) {
+      return respondLocationError(res, error);
     }
   },
 
@@ -38,7 +66,7 @@ const locationController = {
       await deleteLocation(id);
       return res.json({ ok: true });
     } catch (error) {
-      return res.status(400).json({ error: error.message });
+      return respondLocationError(res, error);
     }
   },
 
@@ -49,13 +77,17 @@ const locationController = {
       const queryGroup = String(req.query.groupBy || '').toLowerCase() === 'destino' ? 'destino' : '';
       const groupBy = pathGroup || queryGroup || 'area';
       const snapshot = await db.collection("tickets").get();
+      const locations = groupBy === "destino" ? await listLocations(1000) : [];
       const agg = {};
       let totalItems = 0;
       let totalTickets = 0;
 
       snapshot.docs.forEach((d) => {
         const t = d.data();
-        const key = (t.metadata && t.metadata[groupBy]) ? String(t.metadata[groupBy]).trim() : groupBy === 'destino' ? "(sin destino)" : "(sin área)";
+        const rawKey = (t.metadata && t.metadata[groupBy]) ? String(t.metadata[groupBy]).trim() : "";
+        const key = rawKey
+          ? groupBy === "destino" ? canonicalizeLocationName(rawKey, locations) : rawKey
+          : groupBy === "destino" ? "(sin destino)" : "(sin área)";
         if (!agg[key]) agg[key] = { label: key, ticketCount: 0, totalItems: 0, lastTicketAt: null };
         agg[key].ticketCount += 1;
         totalTickets += 1;

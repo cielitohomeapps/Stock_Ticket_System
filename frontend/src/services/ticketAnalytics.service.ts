@@ -53,6 +53,19 @@ export class TicketAnalyticsService {
     return new Date(timestamp);
   }
 
+  private isAppliedMovement(ticket: Ticket): boolean {
+    return (
+      (ticket.status === 'STOCK_ACTUALIZADO' || ticket.status === 'NOTIFICADO') &&
+      ticket.stockOutcomeResolution === 'APPLIED' &&
+      Boolean(ticket.stockMovementId)
+    );
+  }
+
+  private getValidQuantity(value: number): number {
+    const quantity = Number(value);
+    return Number.isFinite(quantity) && quantity > 0 ? quantity : 0;
+  }
+
   /**
    * Fetch all tickets matching the filter criteria via backend admin API
    */
@@ -73,7 +86,7 @@ export class TicketAnalyticsService {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Analytics fetch failed: ${response.status} ${response.statusText} ${errorText}`);
+      throw new Error(`No se pudieron cargar los datos de análisis (${response.status}). ${errorText}`);
     }
 
     const data = await response.json();
@@ -103,7 +116,7 @@ export class TicketAnalyticsService {
     const productMap = new Map<string, ProductMovement>();
 
     tickets.forEach((ticket) => {
-      ticket.items.forEach((item) => {
+      (ticket.items || []).forEach((item) => {
         const existing = productMap.get(item.productId) || {
           productId: item.productId,
           productName: item.name,
@@ -113,14 +126,17 @@ export class TicketAnalyticsService {
           totalMoved: 0,
         };
 
+        const quantity = this.getValidQuantity(item.qty);
+        if (!quantity) return;
+
         if (ticket.type === 'EXIT') {
-          existing.exitQty += item.qty;
-          existing.netBalance -= item.qty;
+          existing.exitQty += quantity;
+          existing.netBalance -= quantity;
         } else {
-          existing.entryQty += item.qty;
-          existing.netBalance += item.qty;
+          existing.entryQty += quantity;
+          existing.netBalance += quantity;
         }
-        existing.totalMoved += item.qty;
+        existing.totalMoved += quantity;
 
         productMap.set(item.productId, existing);
       });
@@ -138,7 +154,7 @@ export class TicketAnalyticsService {
     const areaMap = new Map<string, number>();
 
     tickets.forEach((ticket) => {
-      const area = ticket.metadata.area || 'Unknown';
+      const area = ticket.metadata.area || 'Sin área';
       areaMap.set(area, (areaMap.get(area) || 0) + 1);
     });
 
@@ -159,7 +175,7 @@ export class TicketAnalyticsService {
     const locationMap = new Map<string, number>();
 
     tickets.forEach((ticket) => {
-      const location = ticket.metadata.destino || 'Unknown';
+      const location = ticket.metadata.destino || 'Sin destino';
       locationMap.set(location, (locationMap.get(location) || 0) + 1);
     });
 
@@ -180,7 +196,7 @@ export class TicketAnalyticsService {
     const motivoMap = new Map<string, number>();
 
     tickets.forEach((ticket) => {
-      const motivo = ticket.metadata.motivo || 'Unknown';
+      const motivo = ticket.metadata.motivo || 'Sin motivo';
       motivoMap.set(motivo, (motivoMap.get(motivo) || 0) + 1);
     });
 
@@ -201,7 +217,7 @@ export class TicketAnalyticsService {
     const locationProductMap = new Map<string, Map<string, ProductMovement>>();
 
     tickets.forEach((ticket) => {
-      const location = ticket.metadata.destino || 'Unknown';
+      const location = ticket.metadata.destino || 'Sin destino';
       if (!locationProductMap.has(location)) {
         locationProductMap.set(location, new Map<string, ProductMovement>());
       }
@@ -217,14 +233,17 @@ export class TicketAnalyticsService {
           totalMoved: 0,
         };
 
+        const quantity = this.getValidQuantity(item.qty);
+        if (!quantity) return;
+
         if (ticket.type === 'EXIT') {
-          existing.exitQty += item.qty;
-          existing.netBalance -= item.qty;
+          existing.exitQty += quantity;
+          existing.netBalance -= quantity;
         } else {
-          existing.entryQty += item.qty;
-          existing.netBalance += item.qty;
+          existing.entryQty += quantity;
+          existing.netBalance += quantity;
         }
-        existing.totalMoved += item.qty;
+        existing.totalMoved += quantity;
 
         productMap.set(item.productId, existing);
       });
@@ -253,7 +272,7 @@ export class TicketAnalyticsService {
       current.setDate(current.getDate() + 1);
     }
 
-    // Populate with ticket data
+    // Only finalized inventory movements belong in this time series.
     tickets.forEach((ticket) => {
       const dateStr = this.formatDateISO(this.toDate(ticket.createdAt));
       const existing = dateMap.get(dateStr);
@@ -286,15 +305,17 @@ export class TicketAnalyticsService {
   /**
    * Compute complete dashboard metrics
    */
-  async computeMetrics(filters: DashboardFilters): Promise<DashboardMetrics> {
-    const tickets = await this.fetchTickets(filters);
+  async computeMetrics(filters: DashboardFilters, fetchedTickets?: Ticket[]): Promise<DashboardMetrics> {
+    const tickets = fetchedTickets || await this.fetchTickets(filters);
+    const appliedTickets = tickets.filter((ticket) => this.isAppliedMovement(ticket));
 
     const totalTickets = tickets.length;
     const totalExitTickets = tickets.filter((t) => t.type === 'EXIT').length;
     const totalEntryTickets = tickets.filter((t) => t.type === 'ENTRY').length;
     const pendingApprovalCount = tickets.filter(
-      (t) => t.status !== 'APROBADO' && t.status !== 'NOTIFICADO'
+      (t) => ['PENDIENTE', 'ENVIADO', 'EN_REVISION', 'PENDIENTE_CORRECCION'].includes(t.status)
     ).length;
+    const rejectedTicketCount = tickets.filter((ticket) => ticket.status === 'RECHAZADO').length;
 
     return {
       totalTickets,
@@ -302,15 +323,20 @@ export class TicketAnalyticsService {
       totalEntryTickets,
       exitPercentage: totalTickets > 0 ? Math.round((totalExitTickets / totalTickets) * 100) : 0,
       entryPercentage: totalTickets > 0 ? Math.round((totalEntryTickets / totalTickets) * 100) : 0,
-      avgApprovalTimeHours: this.calculateApprovalTime(tickets),
+      avgApprovalTimeHours: this.calculateApprovalTime(appliedTickets),
       pendingApprovalCount,
-      topProducts: this.aggregateTopProducts(tickets),
-      totalProductsMoved: tickets.reduce((sum, t) => sum + (t.items?.length || 0), 0),
-      movementByArea: this.aggregateByArea(tickets),
-      movementByLocation: this.aggregateByLocation(tickets),
-      movementByMotivo: this.aggregateByMotivo(tickets),
-      productsByLocation: this.aggregateProductsByLocation(tickets),
-      dailyVolume: this.generateDailyVolume(tickets, filters.dateRange),
+      rejectedTicketCount,
+      appliedMovementCount: appliedTickets.length,
+      topProducts: this.aggregateTopProducts(appliedTickets),
+      totalQuantityMoved: appliedTickets.reduce(
+        (sum, ticket) => sum + (ticket.items || []).reduce((itemSum, item) => itemSum + this.getValidQuantity(item.qty), 0),
+        0
+      ),
+      movementByArea: this.aggregateByArea(appliedTickets),
+      movementByLocation: this.aggregateByLocation(appliedTickets),
+      movementByMotivo: this.aggregateByMotivo(appliedTickets),
+      productsByLocation: this.aggregateProductsByLocation(appliedTickets),
+      dailyVolume: this.generateDailyVolume(appliedTickets, filters.dateRange),
       dateRange: filters.dateRange,
       filteredCount: totalTickets,
     };
@@ -328,8 +354,8 @@ export class TicketAnalyticsService {
         .join(', ');
       const productsSummary =
         items.length > 2
-          ? `${items.length} products: ${itemsPreview}...`
-          : `${items.length} products: ${itemsPreview}`;
+          ? `${items.length} productos: ${itemsPreview}...`
+          : `${items.length} productos: ${itemsPreview}`;
 
       const approvalTimeHours = ticket.approvedAt
         ? Math.round((this.toDate(ticket.approvedAt).getTime() - this.toDate(ticket.createdAt).getTime()) / (1000 * 60 * 60) * 100) / 100
@@ -340,12 +366,12 @@ export class TicketAnalyticsService {
         createdDate: this.formatDisplayDate(this.toDate(ticket.createdAt)),
         type: ticket.type,
         productsSummary,
-        area: ticket.metadata.area || 'N/A',
-        destino: ticket.metadata.destino || 'N/A',
-        firma: ticket.metadata.firma || 'N/A',
+        area: ticket.metadata.area || 'Sin área',
+        destino: ticket.metadata.destino || 'Sin destino',
+        firma: ticket.metadata.firma || 'Sin firma',
         status: ticket.status,
         approvalTimeHours,
-        requestedBy: ticket.requestedBy || 'Unknown',
+        requestedBy: ticket.requestedBy || 'Desconocido',
       };
     });
   }
@@ -371,18 +397,29 @@ export class TicketAnalyticsService {
    * Export data to CSV string
    */
   exportToCSV(rows: CSVExportRow[]): string {
+    const statusLabels: Record<TicketStatus, string> = {
+      CREADO: 'Creado',
+      PENDIENTE: 'Pendiente',
+      ENVIADO: 'Enviado',
+      EN_REVISION: 'En revisión',
+      PENDIENTE_CORRECCION: 'Pendiente de corrección',
+      APROBADO: 'Aprobado',
+      STOCK_ACTUALIZADO: 'Stock actualizado',
+      NOTIFICADO: 'Notificado',
+      RECHAZADO: 'Rechazado',
+    };
     const headers = [
-      'Date',
-      'Type',
-      'Products',
-      'Area',
-      'Destination',
-      'Signature',
-      'Status',
-      'Approval Time (hrs)',
-      'Requested By',
-      'Product IDs',
-      'Items',
+      'Fecha',
+      'Tipo',
+      'Productos',
+      'Área',
+      'Destino',
+      'Firma',
+      'Estado',
+      'Tiempo de aprobación (hrs)',
+      'Solicitado por',
+      'IDs de productos',
+      'Artículos',
     ];
 
     const csvContent = [
@@ -390,13 +427,13 @@ export class TicketAnalyticsService {
       ...rows.map((row) =>
         [
           `"${row.createdDate}"`,
-          row.type,
+          row.type === 'EXIT' ? 'Salida' : 'Entrada',
           `"${row.productsSummary}"`,
           `"${row.area}"`,
           `"${row.destino}"`,
           `"${row.firma}"`,
-          row.status,
-          row.approvalTimeHours?.toString() || 'N/A',
+          statusLabels[row.status],
+          row.approvalTimeHours?.toString() || 'N/D',
           `"${row.requestedBy}"`,
           `"${row.productIds}"`,
           `"${row.itemsList}"`,
@@ -407,17 +444,14 @@ export class TicketAnalyticsService {
     return csvContent;
   }
 
-  /**
-   * Format date for display (MM/DD/YYYY HH:MM)
-   */
+  /** Format date for display in Spanish locale */
   private formatDisplayDate(date: Date): string {
-    return date.toLocaleString('en-US', {
+    return date.toLocaleString('es-MX', {
       month: '2-digit',
       day: '2-digit',
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
-      hour12: true,
     });
   }
 
@@ -434,7 +468,16 @@ export class TicketAnalyticsService {
    * Get list of unique statuses
    */
   async fetchUniqueStatuses(): Promise<TicketStatus[]> {
-    return ['PENDIENTE', 'ENVIADO', 'APROBADO', 'NOTIFICADO', 'RECHAZADO'];
+    return [
+      'CREADO',
+      'PENDIENTE',
+      'ENVIADO',
+      'EN_REVISION',
+      'PENDIENTE_CORRECCION',
+      'APROBADO',
+      'STOCK_ACTUALIZADO',
+      'NOTIFICADO',
+      'RECHAZADO',
+    ];
   }
 }
-

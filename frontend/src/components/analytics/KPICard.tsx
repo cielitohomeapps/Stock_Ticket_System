@@ -22,7 +22,7 @@ export const KPICard: React.FC<KPICardProps> = ({ data, icon = '📊', color = '
       <div className="kpi-icon">{icon}</div>
       <div className="kpi-content">
         <div className="kpi-label">{data.label}</div>
-        <div className="kpi-value">{data.value.toLocaleString()}</div>
+        <div className="kpi-value">{data.value.toLocaleString('es-MX')}</div>
         {data.change !== undefined && (
           <div className={`kpi-change ${data.change >= 0 ? 'positive' : 'negative'}`}>
             {data.change >= 0 ? '↑' : '↓'} {Math.abs(data.changePercent || 0)}%

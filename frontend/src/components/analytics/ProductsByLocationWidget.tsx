@@ -49,9 +49,9 @@ export const ProductsByLocationWidget: React.FC<ProductsByLocationWidgetProps> =
           <thead>
             <tr>
               <th>Producto</th>
-              <th className="text-right">Enviados (EXIT)</th>
-              <th className="text-right">Recibidos (ENTRY)</th>
-              <th className="text-right">Total Movido</th>
+              <th className="text-right">Unidades de salida</th>
+              <th className="text-right">Unidades de entrada</th>
+              <th className="text-right">Total movido</th>
             </tr>
           </thead>
           <tbody>
@@ -69,13 +69,13 @@ export const ProductsByLocationWidget: React.FC<ProductsByLocationWidgetProps> =
                     {product.productName}
                   </td>
                   <td className="text-right">
-                    <span className="qty-badge qty-exit">{product.exitQty.toLocaleString()}</span>
+                    <span className="qty-badge qty-exit">{product.exitQty.toLocaleString('es-MX')}</span>
                   </td>
                   <td className="text-right">
-                    <span className="qty-badge qty-entry">{product.entryQty.toLocaleString()}</span>
+                    <span className="qty-badge qty-entry">{product.entryQty.toLocaleString('es-MX')}</span>
                   </td>
                   <td className="text-right">
-                    <strong>{product.totalMoved.toLocaleString()}</strong>
+                    <strong>{product.totalMoved.toLocaleString('es-MX')}</strong>
                   </td>
                 </tr>
               ))

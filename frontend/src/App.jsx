@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { onIdTokenChanged, signOut } from 'firebase/auth'
+import { onIdTokenChanged, signOut } from '@firebase/auth'
 import { auth } from './config/firebase'
 import { setApiToken, setOnAuthLost, apiFetchJson, API_BASE } from './services/apiClient'
 import './App.css'
@@ -9,8 +9,9 @@ import StepResult from './components/StepResult'
 import AdminPanel from './components/AdminPanel'
 import HistoryPanel from './components/HistoryPanel'
 import ReportsDashboard from './components/ReportsDashboard'
+import Dashboard from './components/Dashboard'
 
-import { ToastProvider } from './components/Toast'
+import { ToastProvider, useToast } from './components/Toast'
 import logoCH from './assets/logoch.jpeg'
 import AnalyticsDashboard from './pages/AnalyticsDashboard.tsx'
 
@@ -26,7 +27,8 @@ function getHashView() {
   return 'ticket'
 }
 
-function App() {
+function AppContent() {
+  const toast = useToast()
   const [firebaseToken, setFirebaseToken] = useState(null)
   const [firebaseUser, setFirebaseUser] = useState(null)
   const [authError, setAuthError] = useState(null)
@@ -125,6 +127,7 @@ function App() {
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState(null)
   const [draftTicket, setDraftTicket] = useState(null)
+  const submitAttemptRef = useRef(null)
 
   const handleEditDraft = (ticket) => {
     setDraftTicket(ticket)
@@ -146,18 +149,42 @@ function App() {
 
       let data;
       if (draftTicket) {
-        data = await apiFetchJson(`/tickets/${draftTicket.id}`, {
+        data = await apiFetchJson(`/tickets/${draftTicket.id}/submit`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
         data.ticketId = draftTicket.id;
       } else {
-        data = await apiFetchJson('/tickets', {
+        const storageKey = firebaseUser?.uid
+          ? `ticket-submit-idempotency:${firebaseUser.uid}`
+          : null
+        if (submitAttemptRef.current?.storageKey !== storageKey) {
+          submitAttemptRef.current = null
+        }
+        if (!submitAttemptRef.current) {
+          const storedKey = storageKey ? sessionStorage.getItem(storageKey) : null
+          if (storedKey) submitAttemptRef.current = { key: storedKey, storageKey }
+        }
+        if (!submitAttemptRef.current) {
+          if (!globalThis.crypto?.randomUUID) {
+            throw new Error('Este navegador no permite proteger el envío contra duplicados. Actualiza el navegador e inténtalo de nuevo.')
+          }
+          submitAttemptRef.current = { key: globalThis.crypto.randomUUID(), storageKey }
+          if (storageKey) sessionStorage.setItem(storageKey, submitAttemptRef.current.key)
+        }
+        data = await apiFetchJson('/tickets/submit', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Idempotency-Key': submitAttemptRef.current.key,
+          },
           body: JSON.stringify(body),
         });
+        if (submitAttemptRef.current.storageKey) {
+          sessionStorage.removeItem(submitAttemptRef.current.storageKey)
+        }
+        submitAttemptRef.current = null
       }
 
       setArea(a)
@@ -167,14 +194,35 @@ function App() {
       setFirma(f)
       setDestino(d)
       setTicketId(data.ticketId)
+      setDraftTicket(null)
       setStep(2)
+      toast.alert({
+        title: data.status === 'EN_REVISION' ? '¡Ticket enviado a revisión!' : 'Ticket registrado',
+        message: `El ticket ${data.ticketId} se registró correctamente y ya aparece en tu historial.`,
+        type: 'success',
+      })
 
       window.dispatchEvent(new CustomEvent('ticket-created', { detail: { ticketId: data.ticketId } }))
     } catch (err) {
-      setSubmitError(err.message)
+      setSubmitError(err)
     } finally {
       setSubmitting(false)
     }
+  }
+
+  const openHistoryForReview = () => {
+    const historyUrl = new URL(window.location.href)
+    historyUrl.hash = 'history'
+    window.open(historyUrl.toString(), '_blank', 'noopener,noreferrer')
+  }
+
+  const startNewSubmissionAfterReview = () => {
+    const storageKey = firebaseUser?.uid
+      ? `ticket-submit-idempotency:${firebaseUser.uid}`
+      : null
+    if (storageKey) sessionStorage.removeItem(storageKey)
+    submitAttemptRef.current = null
+    setSubmitError(null)
   }
 
   const reset = () => {
@@ -209,8 +257,7 @@ function App() {
   const isAdmin = userRole === 'admin' || userRole === 'superadmin'
 
   return (
-    <ToastProvider>
-      <div className="app">
+    <div className="app">
 
         {/* ── Navbar ── */}
         <nav className="navbar">
@@ -265,6 +312,18 @@ function App() {
                     <line x1="6" y1="20" x2="6" y2="14" />
                   </svg>
                   Analytics
+                </button>
+              )}
+              {isAdmin && (
+                <button
+                  className={`navbar-nav-btn ${view === 'dashboard' ? 'active' : ''}`}
+                  onClick={() => {
+                    const next = view === 'dashboard' ? 'ticket' : 'dashboard'
+                    window.location.hash = next
+                    setView(next)
+                  }}
+                >
+                  Monitoreo
                 </button>
               )}
               <button
@@ -369,6 +428,8 @@ function App() {
                       submitting={submitting}
                       submitError={submitError}
                       initialData={draftTicket}
+                      onOpenHistory={openHistoryForReview}
+                      onCreateNewSubmission={startNewSubmissionAfterReview}
                     />
                   )}
 
@@ -436,10 +497,16 @@ function App() {
             </div>
           )}
         </main>
-      </div>
+    </div>
+  )
+}
+
+function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
     </ToastProvider>
   )
 }
 
 export default App
-

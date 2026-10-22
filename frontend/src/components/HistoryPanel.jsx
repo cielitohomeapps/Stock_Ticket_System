@@ -47,6 +47,7 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
   const [downloading, setDownloading] = useState(null)
   const [sendingReview, setSendingReview] = useState(null)
   const [page, setPage] = useState(1)
+  const [hasNextPage, setHasNextPage] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -54,14 +55,17 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
     let active = true
 
     try {
-      const data = await apiFetchJson('/my-tickets')
-      if (active) setTickets(data.tickets || [])
+      const data = await apiFetchJson(`/my-tickets?page=${page}&pageSize=${PAGE_SIZE}`)
+      if (active) {
+        setTickets(data.tickets || [])
+        setHasNextPage(Boolean(data.pagination?.hasNext))
+      }
     } catch (e) {
       if (active) setError(e.message)
     } finally {
       if (active) setLoading(false)
     }
-  }, [])
+  }, [page])
 
   useEffect(() => {
     const cleanup = load()
@@ -105,9 +109,6 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
       setSendingReview(null)
     }
   }
-
-  const totalPages = Math.max(1, Math.ceil(tickets.length / PAGE_SIZE))
-  const paginated = tickets.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
   return (
     <div className="history-panel">
@@ -166,7 +167,7 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
                 </tr>
               </thead>
               <tbody>
-                {paginated.map((t) => (
+                {tickets.map((t) => (
                   <React.Fragment key={t.id}>
                     <tr
                       className={`admin-row ${expandedId === t.id ? 'expanded' : ''}`}
@@ -280,11 +281,11 @@ export default function HistoryPanel({ apiBase, firebaseToken, onBack, onEdit })
             </table>
           </div>
 
-          {totalPages > 1 && (
+          {(page > 1 || hasNextPage) && (
             <div className="pagination">
               <button className="btn-admin-secondary btn-sm" onClick={() => setPage((p) => p - 1)} disabled={page === 1}>← Anterior</button>
-              <span className="pagination-info">Página {page} de {totalPages} · {tickets.length} tickets</span>
-              <button className="btn-admin-secondary btn-sm" onClick={() => setPage((p) => p + 1)} disabled={page === totalPages}>Siguiente →</button>
+              <span className="pagination-info">Página {page} · {tickets.length} tickets en esta página</span>
+              <button className="btn-admin-secondary btn-sm" onClick={() => setPage((p) => p + 1)} disabled={!hasNextPage}>Siguiente →</button>
             </div>
           )}
         </>

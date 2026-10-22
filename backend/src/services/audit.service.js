@@ -1,5 +1,6 @@
 const {ticketDb: db, FieldValue} = require("../config/firebase");
-const {metricsStore} = require("./metrics.service");
+const {logger, sanitize} = require("./observability.service");
+const {alertManager} = require("./alert.service");
 
 /**
  * Add an audit entry to Firestore and record event in metrics.
@@ -10,23 +11,46 @@ const {metricsStore} = require("./metrics.service");
  * @param {Object} [payload={}] - Additional context for the action
  */
 async function addAuditEntry(ticketId, action, user, payload = {}) {
-  const ref = db.collection("ticketAudits").doc();
-  await ref.set({
-    ticketId,
-    action,
-    user,
-    payload,
-    createdAt: FieldValue.serverTimestamp(),
-  });
+  let persisted = true;
+  try {
+    const ref = db.collection("ticketAudits").doc();
+    await ref.set({
+      ticketId,
+      action,
+      user,
+      payload,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  } catch (error) {
+    persisted = false;
+    logger.error("No se pudo persistir una entrada de auditoria", {
+      eventType: "AUDIT_PERSISTENCE_FAILED",
+      module: "audit",
+      ticketId,
+      requestId: payload.requestId,
+      correlationId: payload.correlationId,
+      metadata: {action},
+    }, error);
+    alertManager.trigger({
+      type: "AUDIT_PERSISTENCE_FAILED",
+      severity: "ERROR",
+      summary: "No se pudo persistir un evento de auditoria de ticket",
+      ticketId,
+      module: "audit",
+      dedupeKey: `AUDIT_PERSISTENCE_FAILED:${ticketId}:${action}`,
+    });
+  }
 
-  // Record event in metrics store for real-time dashboard
-  const severity = action.includes("ERROR") || action.includes("REJECT") ? "warn" : "info";
-  metricsStore.recordEvent(
-    action,
-    severity,
-    `${action} on ticket ${ticketId}`,
-    {ticketId, user, ...payload}
-  );
+  const level = action.includes("ERROR") || action.includes("REJECT") ? "warn" : "info";
+  logger[level](`Evento de ticket: ${action}`, {
+    eventType: action,
+    module: "tickets",
+    ticketId,
+    requestId: payload.requestId,
+    correlationId: payload.correlationId,
+    metadata: sanitize({actorId: user, ...payload}),
+  });
+  return persisted;
 }
 
 module.exports = {

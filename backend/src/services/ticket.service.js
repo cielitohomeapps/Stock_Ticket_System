@@ -1,7 +1,24 @@
 const {ticketDb: db, FieldValue} = require("../config/firebase");
 const {STATUS} = require("./stock.service");
 const {getProductById} = require("./inventory-api.service");
-const {ensureLocationRecord} = require("./location.service");
+const {resolveLocationRecord} = require("./location.service");
+const {
+  normalizeTicketPayload,
+  evaluateTicketIntegrity,
+} = require("./ticket-integrity.service");
+const {logger} = require("./observability.service");
+const {alertManager} = require("./alert.service");
+const {
+  createIdempotencyDocumentId,
+  createSubmissionFingerprint,
+} = require("./idempotency.service");
+
+function serviceError(message, statusCode, code) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  return error;
+}
 
 function serializeFirestoreTimestamp(value) {
   if (!value) return null
@@ -31,71 +48,181 @@ function serializeTicketDoc(doc) {
 }
 
 async function createTicket({type, items, assignedUsers, requestedBy, metadata}) {
-  if (!["ENTRY", "EXIT"].includes(type)) {
-    throw new Error("type debe ser ENTRY o EXIT.");
-  }
-
-  if (!Array.isArray(items) || !items.length) {
-    throw new Error("Debes enviar al menos un item en items.");
-  }
-
-  for (const item of items) {
-    const productId = item.productId || item.id || item.sku;
-    const qty = Number(item.qty);
-    if (!productId || !Number.isFinite(qty) || qty <= 0) {
-      throw new Error("Cada item debe incluir productId (o sku legacy) y qty > 0.");
-    }
-  }
-
-  const safeMetadata = {...(metadata || {})};
+  const normalized = normalizeTicketPayload({type, items, assignedUsers, metadata});
+  const safeMetadata = {...normalized.metadata};
 
   // Preserve the inventory API area as provided by the frontend.
   // Only canonicalize destino into ubicaciones.
   if (safeMetadata.destino) {
-    const destinoRecord = await ensureLocationRecord(safeMetadata.destino);
-    safeMetadata.destino = destinoRecord.name || safeMetadata.destino;
+    const destinoRecord = await resolveLocationRecord(safeMetadata.destino);
+    safeMetadata.destino = destinoRecord.name;
   }
 
   const ticketRef = db.collection("tickets").doc();
   await ticketRef.set({
-    type,
+    type: normalized.type,
     status: STATUS.CREATED,
-    items,
-    assignedUsers: Array.isArray(assignedUsers) ? assignedUsers : [],
+    submissionState: "DRAFT",
+    items: normalized.items,
+    assignedUsers: normalized.assignedUsers,
     requestedBy,
     metadata: safeMetadata,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
 
-  return {id: ticketRef.id};
+  return {id: ticketRef.id, status: STATUS.CREATED};
+}
+
+function extractStock(product) {
+  const source = product?.data || product || {};
+  const keys = [
+    "stock", "Stock", "STOCK", "cantidad", "Cantidad", "CANTIDAD",
+    "existencias", "Existencias", "disponible", "Disponible",
+    "cantidadDisponible", "stockActual", "quantity", "qty",
+  ];
+  for (const key of keys) {
+    if (source[key] !== undefined && source[key] !== null && source[key] !== "") {
+      const value = Number(source[key]);
+      if (Number.isFinite(value)) return value;
+    }
+  }
+  return null;
+}
+
+async function validateStockAvailability(ticket, clientToken) {
+  if (ticket.type !== "EXIT") return;
+  for (const item of ticket.items) {
+    let detail;
+    try {
+      detail = await getProductById(item.productId, clientToken);
+    } catch (error) {
+      throw serviceError(`No se pudo validar el inventario del producto ${item.productId}.`, 502, "INVENTORY_UNAVAILABLE");
+    }
+    const currentStock = extractStock(detail);
+    if (currentStock === null) {
+      throw serviceError(`El inventario no devolvio stock valido para ${item.productId}.`, 502, "INVALID_INVENTORY_RESPONSE");
+    }
+    if (currentStock < item.qty) {
+      throw serviceError(
+          `Stock insuficiente para producto ${item.productId}. Disponible: ${currentStock}, solicitado: ${item.qty}.`,
+          409,
+          "INSUFFICIENT_STOCK",
+      );
+    }
+  }
+}
+
+async function verifyPersistedTicket(ticketId) {
+  const persisted = await getTicket(ticketId);
+  if (!persisted) {
+    const error = serviceError("No se pudo verificar el ticket persistido.", 500, "PERSISTENCE_VERIFICATION_FAILED");
+    error.ticketId = ticketId;
+    throw error;
+  }
+  const integrity = evaluateTicketIntegrity(persisted);
+  if (!integrity.complete) {
+    logger.error("La verificacion posterior detecto un ticket incompleto", {
+      eventType: "TICKET_INTEGRITY_FAILED",
+      module: "tickets",
+      ticketId,
+      metadata: {issues: integrity.issues},
+    });
+    alertManager.trigger({
+      type: "TICKET_INTEGRITY_FAILED",
+      severity: "ERROR",
+      summary: "Un ticket persistido no supero la verificacion de integridad",
+      ticketId,
+      module: "tickets",
+    });
+    const error = serviceError("El ticket se guardo, pero fallo su verificacion de integridad.", 500, "PERSISTENCE_INTEGRITY_FAILED");
+    error.ticketId = ticketId;
+    throw error;
+  }
+  return persisted;
+}
+
+async function submitTicket({type, items, assignedUsers, requestedBy, metadata}, clientToken, idempotencyKey) {
+  const normalized = normalizeTicketPayload({type, items, assignedUsers, metadata});
+  const idempotencyDocumentId = createIdempotencyDocumentId(requestedBy, idempotencyKey);
+  const payloadFingerprint = createSubmissionFingerprint(requestedBy, normalized);
+  const submissionRef = db.collection("ticketSubmissionKeys").doc(idempotencyDocumentId);
+
+  const existingSubmission = await submissionRef.get();
+  if (existingSubmission.exists) {
+    const existing = existingSubmission.data();
+    if (existing.payloadFingerprint !== payloadFingerprint) {
+      throw serviceError(
+          "Esta solicitud ya se usó con otros datos. Revisa el historial antes de intentar enviar un ticket nuevo.",
+          409,
+          "IDEMPOTENCY_KEY_REUSED",
+      );
+    }
+    const existingTicket = await getTicket(existing.ticketId);
+    if (!existingTicket) {
+      throw serviceError(
+          "La solicitud ya fue registrada, pero no se pudo consultar su ticket. Contacta al administrador e indica el identificador de solicitud.",
+          500,
+          "IDEMPOTENCY_RECORD_INCONSISTENT",
+      );
+    }
+    return {id: existingTicket.id, status: existingTicket.status, replayed: true};
+  }
+
+  await validateStockAvailability(normalized, clientToken);
+  const safeMetadata = {...normalized.metadata};
+  if (safeMetadata.destino) {
+    const destinoRecord = await resolveLocationRecord(safeMetadata.destino);
+    safeMetadata.destino = destinoRecord.name;
+  }
+
+  const ticketRef = db.collection("tickets").doc();
+  let ticketId = ticketRef.id;
+  await db.runTransaction(async (trx) => {
+    const submissionDoc = await trx.get(submissionRef);
+    if (submissionDoc.exists) {
+      const existing = submissionDoc.data();
+      if (existing.payloadFingerprint !== payloadFingerprint) {
+        throw serviceError(
+            "Esta solicitud ya se usó con otros datos. Revisa el historial antes de intentar enviar un ticket nuevo.",
+            409,
+            "IDEMPOTENCY_KEY_REUSED",
+        );
+      }
+      ticketId = existing.ticketId;
+      return;
+    }
+
+    const timestamp = FieldValue.serverTimestamp();
+    trx.set(ticketRef, {
+      ...normalized,
+      metadata: safeMetadata,
+      status: STATUS.IN_REVIEW,
+      submissionState: "SUBMITTED",
+      requestedBy,
+      reviewSentBy: requestedBy,
+      reviewSentAt: timestamp,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    trx.create(submissionRef, {
+      ticketId: ticketRef.id,
+      requestedBy,
+      payloadFingerprint,
+      createdAt: timestamp,
+    });
+  });
+  const persisted = await verifyPersistedTicket(ticketId);
+  return {id: ticketId, status: persisted.status, replayed: ticketId !== ticketRef.id};
 }
 
 async function updateTicket(ticketId, userId, updateData) {
   const ticketRef = db.collection("tickets").doc(ticketId);
-
-  // Validate items before transaction
-  if (updateData.items) {
-    if (!Array.isArray(updateData.items) || !updateData.items.length) {
-      throw new Error("Debes enviar al menos un item en items.");
-    }
-    for (const item of updateData.items) {
-      const productId = item.productId || item.id || item.sku;
-      const qty = Number(item.qty);
-      if (!productId || !Number.isFinite(qty) || qty <= 0) {
-        throw new Error("Cada item debe incluir productId y qty > 0.");
-      }
-    }
-  }
-
-  if (updateData.type && !["ENTRY", "EXIT"].includes(updateData.type)) {
-    throw new Error("type debe ser ENTRY o EXIT.");
-  }
-
-  const safeMetadata = {...(updateData.metadata || {})};
+  const normalized = normalizeTicketPayload(updateData);
+  const safeMetadata = {...normalized.metadata};
   if (safeMetadata.destino) {
-    const destinoRecord = await ensureLocationRecord(safeMetadata.destino);
-    safeMetadata.destino = destinoRecord.name || safeMetadata.destino;
+    const destinoRecord = await resolveLocationRecord(safeMetadata.destino);
+    safeMetadata.destino = destinoRecord.name;
   }
 
   await db.runTransaction(async (trx) => {
@@ -106,23 +233,58 @@ async function updateTicket(ticketId, userId, updateData) {
 
     const ticket = ticketDoc.data();
     if (ticket.status !== STATUS.CREATED && ticket.status !== STATUS.PENDING_CORRECTION) {
-      throw new Error("Solo se puede editar un ticket en estado CREADO o PENDIENTE_CORRECCION.");
+      throw serviceError("Solo se puede editar un ticket en estado CREADO o PENDIENTE_CORRECCION.", 409, "INVALID_TICKET_STATE");
     }
 
     if (ticket.requestedBy !== userId) {
-      throw new Error("No tienes permiso para editar este ticket.");
+      throw serviceError("No tienes permiso para editar este ticket.", 403, "TICKET_FORBIDDEN");
     }
 
-    const updates = { updatedAt: FieldValue.serverTimestamp() };
-    if (updateData.items) updates.items = updateData.items;
-    if (updateData.type) updates.type = updateData.type;
-    if (Object.keys(safeMetadata).length > 0) {
-      // Merge with existing metadata
-      updates.metadata = { ...(ticket.metadata || {}), ...safeMetadata };
-    }
+    const updates = {
+      ...normalized,
+      metadata: safeMetadata,
+      submissionState: "DRAFT",
+      updatedAt: FieldValue.serverTimestamp(),
+    };
 
     trx.update(ticketRef, updates);
   });
+  return verifyPersistedTicket(ticketId);
+}
+
+async function updateAndSubmitTicket(ticketId, userId, updateData, clientToken) {
+  const ticketRef = db.collection("tickets").doc(ticketId);
+  const normalized = normalizeTicketPayload(updateData);
+  await validateStockAvailability(normalized, clientToken);
+  const safeMetadata = {...normalized.metadata};
+  if (safeMetadata.destino) {
+    const destinoRecord = await resolveLocationRecord(safeMetadata.destino);
+    safeMetadata.destino = destinoRecord.name;
+  }
+
+  await db.runTransaction(async (trx) => {
+    const ticketDoc = await trx.get(ticketRef);
+    if (!ticketDoc.exists) throw serviceError("Ticket no encontrado.", 404, "TICKET_NOT_FOUND");
+    const ticket = ticketDoc.data();
+    if (![STATUS.CREATED, STATUS.PENDING_CORRECTION].includes(ticket.status)) {
+      throw serviceError("El ticket ya no se puede enviar desde su estado actual.", 409, "INVALID_TICKET_STATE");
+    }
+    if (ticket.requestedBy !== userId) {
+      throw serviceError("No tienes permiso para enviar este ticket.", 403, "TICKET_FORBIDDEN");
+    }
+    trx.update(ticketRef, {
+      ...normalized,
+      metadata: safeMetadata,
+      status: STATUS.IN_REVIEW,
+      submissionState: "SUBMITTED",
+      reviewSentBy: userId,
+      reviewSentAt: FieldValue.serverTimestamp(),
+      correctionComment: FieldValue.delete(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  });
+  const persisted = await verifyPersistedTicket(ticketId);
+  return {id: ticketId, status: persisted.status};
 }
 
 async function sendToReview(ticketId, requestedBy, clientToken) {
@@ -135,52 +297,24 @@ async function sendToReview(ticketId, requestedBy, clientToken) {
   }
 
   const ticket = ticketDocSnap.data();
+  if (ticket.requestedBy !== requestedBy) {
+    throw serviceError("No tienes permiso para enviar este ticket a revision.", 403, "TICKET_FORBIDDEN");
+  }
   if (ticket.status !== STATUS.CREATED && ticket.status !== STATUS.PENDING_CORRECTION) {
-    throw new Error("Solo se puede enviar a revision un ticket en estado CREADO o PENDIENTE_CORRECCION.");
+    throw serviceError(
+        "Solo se puede enviar a revisión un ticket creado o pendiente de corrección.",
+        409,
+        "INVALID_TICKET_STATE",
+    );
   }
 
-  // For EXIT tickets, validate stock availability before sending to review
-  if (ticket.type === "EXIT") {
-    const items = Array.isArray(ticket.items) ? ticket.items : [];
-    for (const item of items) {
-      const productId = item.productId || item.id || item.sku;
-      const qty = Number(item.qty);
-      if (!productId || !Number.isFinite(qty) || qty <= 0) {
-        throw new Error("Cada item debe incluir productId (o sku legacy) y qty > 0.");
-      }
-
-      try {
-        const detail = await getProductById(productId, clientToken);
-        console.log(`[sendToReview] Full API response for ${productId}:`, JSON.stringify(detail, null, 2));
-        
-        const product = detail?.data || detail || {};
-        console.log(`[sendToReview] Extracted product for ${productId}:`, JSON.stringify(product, null, 2));
-        
-        // Try multiple stock field names
-        let currentStock = 0;
-        const stockKeys = ['stock', 'Stock', 'STOCK', 'cantidad', 'Cantidad', 'CANTIDAD', 'existencias', 'Existencias', 'disponible', 'Disponible'];
-        for (const key of stockKeys) {
-          if (product[key] !== undefined && product[key] !== null) {
-            currentStock = Number(product[key]);
-            console.log(`[sendToReview] Found stock in field '${key}': ${currentStock}`);
-            if (currentStock >= 0) break;
-          }
-        }
-        
-        console.log(`[sendToReview] Final stock for ${productId}: ${currentStock}, requested: ${qty}`);
-
-        if (currentStock < qty) {
-          throw new Error(
-            `Stock insuficiente para producto ${productId}. Disponible: ${currentStock}, solicitado: ${qty}.`,
-          );
-        }
-      } catch (apiError) {
-        throw new Error(
-          `Error validando stock para ${productId}: ${apiError.message}`,
-        );
-      }
-    }
-  }
+  const normalized = normalizeTicketPayload(ticket);
+  const destinoRecord = await resolveLocationRecord(normalized.metadata.destino);
+  await validateStockAvailability(normalized, clientToken);
+  const validatedStockRequest = JSON.stringify({
+    type: normalized.type,
+    items: normalized.items.map(({productId, qty}) => ({productId, qty})),
+  });
 
   // All validations passed — now update status inside a transaction to avoid races
   await db.runTransaction(async (trx) => {
@@ -189,16 +323,44 @@ async function sendToReview(ticketId, requestedBy, clientToken) {
       throw new Error("Ticket no encontrado.");
     }
     const fresh = freshDoc.data();
+    if (fresh.requestedBy !== requestedBy) {
+      throw serviceError("No tienes permiso para enviar este ticket a revision.", 403, "TICKET_FORBIDDEN");
+    }
     if (fresh.status !== STATUS.CREATED && fresh.status !== STATUS.PENDING_CORRECTION) {
-      throw new Error("Solo se puede enviar a revision un ticket en estado CREADO o PENDIENTE_CORRECCION.");
+      throw serviceError(
+          "Solo se puede enviar a revisión un ticket creado o pendiente de corrección.",
+          409,
+          "INVALID_TICKET_STATE",
+      );
+    }
+    const freshNormalized = normalizeTicketPayload(fresh);
+    if (freshNormalized.metadata.destino !== normalized.metadata.destino) {
+      throw serviceError(
+          "El destino del ticket cambió durante la validación. Actualiza la pantalla y vuelve a enviarlo.",
+          409,
+          "TICKET_CHANGED_DURING_SUBMISSION",
+      );
+    }
+    const currentStockRequest = JSON.stringify({
+      type: freshNormalized.type,
+      items: freshNormalized.items.map(({productId, qty}) => ({productId, qty})),
+    });
+    if (currentStockRequest !== validatedStockRequest) {
+      throw serviceError(
+          "El ticket cambio mientras se validaba el stock. Actualiza la pantalla y vuelve a enviarlo.",
+          409,
+          "TICKET_CHANGED_DURING_SUBMISSION",
+      );
     }
 
     trx.update(ticketRef, {
       status: STATUS.IN_REVIEW,
+      submissionState: "SUBMITTED",
       reviewSentBy: requestedBy,
       reviewSentAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
       correctionComment: FieldValue.delete(),
+      "metadata.destino": destinoRecord.name,
     });
   });
 }
@@ -212,8 +374,15 @@ async function rejectTicket(ticketId, approverUserId, comment) {
     }
 
     const ticket = ticketDoc.data();
-    if (ticket.status !== STATUS.IN_REVIEW && ticket.status !== STATUS.CREATED) {
-      throw new Error("Solo se puede rechazar un ticket en CREADO o EN_REVISION.");
+    if (ticket.status !== STATUS.IN_REVIEW) {
+      throw serviceError("Solo se puede rechazar un ticket en EN_REVISION.", 409, "INVALID_TICKET_STATE");
+    }
+    if (ticket.stockProcessing || ticket.stockSyncStatus === "UNKNOWN") {
+      throw serviceError(
+          "No se puede rechazar este ticket mientras el resultado del movimiento de inventario se procesa o requiere verificacion.",
+          409,
+          ticket.stockSyncStatus === "UNKNOWN" ? "STOCK_OUTCOME_UNKNOWN" : "STOCK_PROCESSING",
+      );
     }
 
     trx.update(ticketRef, {
@@ -235,8 +404,15 @@ async function returnToCreator(ticketId, approverUserId, comment) {
     }
 
     const ticket = ticketDoc.data();
-    if (ticket.status !== STATUS.IN_REVIEW && ticket.status !== STATUS.CREATED) {
-      throw new Error("Solo se puede devolver un ticket en CREADO o EN_REVISION.");
+    if (ticket.status !== STATUS.IN_REVIEW) {
+      throw serviceError("Solo se puede devolver un ticket en EN_REVISION.", 409, "INVALID_TICKET_STATE");
+    }
+    if (ticket.stockProcessing || ticket.stockSyncStatus === "UNKNOWN") {
+      throw serviceError(
+          "No se puede devolver este ticket mientras el resultado del movimiento de inventario se procesa o requiere verificacion.",
+          409,
+          ticket.stockSyncStatus === "UNKNOWN" ? "STOCK_OUTCOME_UNKNOWN" : "STOCK_PROCESSING",
+      );
     }
 
     trx.update(ticketRef, {
@@ -275,40 +451,28 @@ async function getTicket(ticketId) {
   return serializeTicketDoc(doc);
 }
 
-async function listTickets({status, area, limitCount = 100} = {}) {
-  // Use where() alone (no orderBy) to avoid requiring a composite index.
-  // Sorting is done in-memory after fetching.
+async function listTickets({status, area, page = 1, pageSize = 25} = {}) {
+  const safePage = Math.max(1, Number(page) || 1);
+  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 25));
   let query = db.collection("tickets");
-
-  if (status) {
-    query = query.where("status", "==", status).limit(limitCount);
-  } else {
-    query = query.limit(limitCount);
-  }
-
+  if (status) query = query.where("status", "==", status);
+  if (area) query = query.where("metadata.area", "==", area);
+  query = query.orderBy("createdAt", "desc")
+      .offset((safePage - 1) * safePageSize)
+      .limit(safePageSize + 1);
   const snapshot = await query.get();
-  const tickets = snapshot.docs.map((d) => serializeTicketDoc(d));
-
-  // Sort descending by createdAt in memory
-  tickets.sort((a, b) => {
-    const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0
-    const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0
-    return tb - ta
-  })
-
-  // Filter by area in memory if needed (Firestore doesn't support nested field filter easily)
-  if (area) {
-    return tickets.filter((t) => {
-      const ticketArea = t.metadata?.area || "";
-      return ticketArea.toLowerCase() === area.toLowerCase();
-    });
-  }
-  return tickets;
+  const hasNext = snapshot.docs.length > safePageSize;
+  return {
+    tickets: snapshot.docs.slice(0, safePageSize).map((doc) => serializeTicketDoc(doc)),
+    pagination: {page: safePage, pageSize: safePageSize, hasNext},
+  };
 }
 
 module.exports = {
   createTicket,
+  submitTicket,
   updateTicket,
+  updateAndSubmitTicket,
   sendToReview,
   rejectTicket,
   returnToCreator,
@@ -317,14 +481,22 @@ module.exports = {
   getTicket,
   listTickets,
   listTicketsByUser,
+  validateStockAvailability,
+  extractStock,
 };
 
-async function listTicketsByUser(userId, limitCount = 50) {
+async function listTicketsByUser(userId, {page = 1, pageSize = 25} = {}) {
+  const safePage = Math.max(1, Number(page) || 1);
+  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 25));
   const snapshot = await db.collection("tickets")
     .where("requestedBy", "==", userId)
     .orderBy("createdAt", "desc")
-    .limit(limitCount)
+    .offset((safePage - 1) * safePageSize)
+    .limit(safePageSize + 1)
     .get();
 
-  return snapshot.docs.map((d) => serializeTicketDoc(d));
+  return {
+    tickets: snapshot.docs.slice(0, safePageSize).map((doc) => serializeTicketDoc(doc)),
+    pagination: {page: safePage, pageSize: safePageSize, hasNext: snapshot.docs.length > safePageSize},
+  };
 }

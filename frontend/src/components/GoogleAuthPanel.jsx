@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { signInWithPopup, OAuthProvider } from 'firebase/auth'
+import { signInWithPopup, OAuthProvider } from '@firebase/auth'
 import { auth } from '../config/firebase'
 import logoCH from '../assets/logoch.jpeg'
 

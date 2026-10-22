@@ -1,5 +1,5 @@
 /**
- * Location Distribution Chart - Donut chart showing movement distribution by location
+ * Gráfica de movimientos aplicados por ubicación
  */
 
 import React from 'react';
@@ -41,28 +41,32 @@ export const AreaDistributionChart: React.FC<AreaDistributionChartProps> = ({ da
 
   return (
     <div className="chart-container">
-      <h3>Movement by Location</h3>
-      <ResponsiveContainer width="100%" height={height}>
-        <PieChart>
-          <Pie
-            data={chartData}
-            cx="50%"
-            cy="50%"
-            innerRadius={60}
-            outerRadius={100}
-            fill="#8884d8"
-            paddingAngle={2}
-            dataKey="value"
-            label={renderCustomLabel}
-          >
-            {chartData.map((_, index) => (
-              <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-            ))}
-          </Pie>
-          <Tooltip formatter={(value) => value.toLocaleString()} />
-          <Legend layout="vertical" align="right" verticalAlign="middle" />
-        </PieChart>
-      </ResponsiveContainer>
+      <h3>Movimientos aplicados por ubicación</h3>
+      {chartData.length === 0 ? (
+        <div className="analytics-empty-state">No hay movimientos aplicados en este periodo.</div>
+      ) : (
+        <ResponsiveContainer width="100%" height={height}>
+          <PieChart>
+            <Pie
+              data={chartData}
+              cx="50%"
+              cy="50%"
+              innerRadius={60}
+              outerRadius={100}
+              fill="#8884d8"
+              paddingAngle={2}
+              dataKey="value"
+              label={renderCustomLabel}
+            >
+              {chartData.map((_, index) => (
+                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+              ))}
+            </Pie>
+            <Tooltip formatter={(value) => Number(value).toLocaleString('es-MX')} />
+            <Legend layout="vertical" align="right" verticalAlign="middle" />
+          </PieChart>
+        </ResponsiveContainer>
+      )}
     </div>
   );
 };

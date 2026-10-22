@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import {
-  unwrapTypedValue,
-  asText,
   normalizeText,
   escapeRegExp,
   getProductId,
   getProductName,
+  getProductStock,
 } from '../utils/productHelpers'
 
 function highlightMatch(text, query) {
@@ -13,19 +12,20 @@ function highlightMatch(text, query) {
   const escaped = escapeRegExp(query)
   const regex = new RegExp(`(${escaped})`, 'gi')
   return text.split(regex).map((segment, idx) => (
-    regex.test(segment)
+    idx % 2 === 1
       ? <mark key={idx}>{segment}</mark>
       : <span key={idx}>{segment}</span>
   ))
 }
 
-export const ProductSearch = ({ products, onSelect }) => {
+export const ProductSearch = ({ products, onSelect, selectedProductIds = [] }) => {
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
 
   const normalizedQuery = useMemo(() => normalizeText(query), [query])
+  const selectedIds = useMemo(() => new Set(selectedProductIds), [selectedProductIds])
 
-  const results = useMemo(() => {
+  const matchingProducts = useMemo(() => {
     if (!normalizedQuery) return []
     return products
       .filter((product) => {
@@ -33,8 +33,8 @@ export const ProductSearch = ({ products, onSelect }) => {
         const id = normalizeText(getProductId(product)) || ''
         return name.includes(normalizedQuery) || id.includes(normalizedQuery)
       })
-      .slice(0, 10)
   }, [products, normalizedQuery])
+  const results = useMemo(() => matchingProducts.slice(0, 10), [matchingProducts])
 
   useEffect(() => {
     setActiveIndex((current) => {
@@ -49,8 +49,11 @@ export const ProductSearch = ({ products, onSelect }) => {
   }
 
   const handleKeyDown = (event) => {
-    if (!results.length) return
-    if (event.key === 'ArrowDown') {
+    if (event.key === 'Escape') {
+      setQuery('')
+    } else if (!results.length) {
+      return
+    } else if (event.key === 'ArrowDown') {
       event.preventDefault()
       setActiveIndex((current) => (current + 1) % results.length)
     } else if (event.key === 'ArrowUp') {
@@ -60,8 +63,6 @@ export const ProductSearch = ({ products, onSelect }) => {
       event.preventDefault()
       const product = results[activeIndex]
       if (product) handleSelect(product)
-    } else if (event.key === 'Escape') {
-      setQuery('')
     }
   }
 
@@ -75,6 +76,9 @@ export const ProductSearch = ({ products, onSelect }) => {
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
           aria-label="Buscar producto"
+          aria-autocomplete="list"
+          aria-controls="product-search-results"
+          aria-expanded={results.length > 0}
         />
         {query && (
           <button type="button" className="clear-search" onClick={() => setQuery('')}>
@@ -84,26 +88,34 @@ export const ProductSearch = ({ products, onSelect }) => {
       </div>
       {query && (
         <div className="search-meta">
-          {results.length > 0
-            ? `Mostrando ${results.length} producto${results.length === 1 ? '' : 's'}`
+          {matchingProducts.length > 0
+            ? `Mostrando ${results.length < matchingProducts.length ? `los primeros ${results.length} de ${matchingProducts.length}` : results.length} resultado${matchingProducts.length === 1 ? '' : 's'}`
             : 'No se encontraron productos'}
         </div>
       )}
       {results.length > 0 && (
-        <ul className="search-results" role="listbox">
+        <ul className="search-results" id="product-search-results" role="listbox">
           {results.map((product, index) => {
             const id = getProductId(product)
             const name = getProductName(product)
             return (
               <li
                 key={id || index}
-                className={index === activeIndex ? 'active' : ''}
+                className={`${index === activeIndex ? 'active' : ''}${selectedIds.has(id) ? ' selected' : ''}`}
                 role="option"
                 aria-selected={index === activeIndex}
                 onMouseDown={() => handleSelect(product)}
               >
-                <div className="result-label">{highlightMatch(name, query)}</div>
-                {id && <div className="result-subtitle">ID: {id}</div>}
+                <div className="search-result-main">
+                  <div className="result-label">{highlightMatch(name, query)}</div>
+                  {id && <div className="result-subtitle">ID: {id}</div>}
+                </div>
+                <div className="search-result-meta">
+                  <span className="search-result-stock">Stock: {getProductStock(product)}</span>
+                  <span className={`search-result-action${selectedIds.has(id) ? ' added' : ''}`}>
+                    {selectedIds.has(id) ? 'Agregado' : 'Agregar'}
+                  </span>
+                </div>
               </li>
             )
           })}

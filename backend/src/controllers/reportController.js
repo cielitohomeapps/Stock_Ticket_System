@@ -1,4 +1,6 @@
 const { ticketDb: db } = require("../config/firebase");
+const {listLocations} = require("../services/location.service");
+const {canonicalizeLocationName} = require("../services/location-normalization");
 
 function asText(value) {
   if (value === null || value === undefined) return null
@@ -27,11 +29,19 @@ function matchesAnalyticsFilters(ticket, { startDate, endDate, type, area, statu
   }
   if (status && status !== 'ALL') {
     if (status === 'PENDING_APPROVAL') {
-      return ['PENDIENTE', 'ENVIADO'].includes(ticket.status);
+      return ['PENDIENTE', 'ENVIADO', 'EN_REVISION', 'PENDIENTE_CORRECCION'].includes(ticket.status);
     }
     return ticket.status === status;
   }
   return true;
+}
+
+function isAppliedMovement(ticket) {
+  return (
+    ["STOCK_ACTUALIZADO", "NOTIFICADO"].includes(ticket.status) &&
+    ticket.stockOutcomeResolution === "APPLIED" &&
+    Boolean(ticket.stockMovementId)
+  );
 }
 
 function getProductNameFromDoc(docData) {
@@ -92,6 +102,7 @@ const reportController = {
         id: doc.id,
         ...doc.data()
       }));
+      const locations = await listLocations(1000);
 
       // Serialize timestamps
       tickets.forEach(t => {
@@ -99,13 +110,14 @@ const reportController = {
           t.createdAt = t.createdAt.toDate();
         }
       });
+      const appliedTickets = tickets.filter(isAppliedMovement);
 
       // ────── TOP PRODUCTS (with real names) ──────
       const productMap = {};
       const productIdToName = {}; // Cache for product names
       
       // First pass: collect all product IDs
-      tickets.forEach(ticket => {
+      appliedTickets.forEach(ticket => {
         if (Array.isArray(ticket.items)) {
           ticket.items.forEach(item => {
             if (item.productId && !productIdToName[item.productId]) {
@@ -121,7 +133,7 @@ const reportController = {
       }
 
       // Second pass: aggregate with real names
-      tickets.forEach(ticket => {
+      appliedTickets.forEach(ticket => {
         if (Array.isArray(ticket.items)) {
           ticket.items.forEach(item => {
             const productId = item.productId || "unknown";
@@ -147,8 +159,8 @@ const reportController = {
 
       // ────── TOP DESTINATIONS (with ticket details) ──────
       const destMap = {};
-      tickets.forEach(ticket => {
-        const dest = (ticket.metadata?.destino || "Sin destino").trim();
+      appliedTickets.forEach(ticket => {
+        const dest = canonicalizeLocationName(ticket.metadata?.destino || "Sin destino", locations);
         if (!destMap[dest]) {
           destMap[dest] = { 
             destination: dest, 
@@ -185,7 +197,7 @@ const reportController = {
 
       // ────── MONTHLY STATS ──────
       const monthMap = {};
-      tickets.forEach(ticket => {
+      appliedTickets.forEach(ticket => {
         if (!ticket.createdAt) return;
         const date = new Date(ticket.createdAt);
         const yearMonth = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
@@ -212,7 +224,7 @@ const reportController = {
           });
         }
         
-        const location = (ticket.metadata?.destino || "Sin destino").trim();
+        const location = canonicalizeLocationName(ticket.metadata?.destino || "Sin destino", locations);
         monthMap[yearMonth].locations.add(location);
       });
 
@@ -229,7 +241,7 @@ const reportController = {
 
       // ────── SUMMARY KPIs ──────
       const totalTickets = tickets.length;
-      const totalItems = tickets.reduce((sum, t) => {
+      const totalItems = appliedTickets.reduce((sum, t) => {
         if (Array.isArray(t.items)) {
           return sum + t.items.reduce((s, item) => s + (Number(item.qty) || 0), 0);
         }
@@ -242,8 +254,8 @@ const reportController = {
         statusCounts[status] = (statusCounts[status] || 0) + 1;
       });
 
-      const approvalRate = statusCounts["STOCK_ACTUALIZADO"] || statusCounts["NOTIFICADO"]
-        ? Math.round(((statusCounts["STOCK_ACTUALIZADO"] || 0 + statusCounts["NOTIFICADO"] || 0) / totalTickets) * 100)
+      const approvalRate = totalTickets > 0
+        ? Math.round((appliedTickets.length / totalTickets) * 100)
         : 0;
 
       const rejectionRate = statusCounts["RECHAZADO"]
@@ -253,7 +265,7 @@ const reportController = {
       // Average processing time (createdAt to approvedAt)
       let totalProcessingTime = 0;
       let processedCount = 0;
-      tickets.forEach(t => {
+      appliedTickets.forEach(t => {
         if (t.createdAt && t.approvedAt) {
           const createdDate = t.createdAt instanceof Date ? t.createdAt : new Date(t.createdAt);
           const approvedDate = t.approvedAt instanceof Date ? t.approvedAt : new Date(t.approvedAt);
@@ -274,7 +286,9 @@ const reportController = {
           approvalRate,
           rejectionRate,
           avgProcessingMinutes,
-          pendingCount: statusCounts["EN_REVISION"] || 0
+          pendingCount: tickets.filter(t =>
+            ["PENDIENTE", "ENVIADO", "EN_REVISION", "PENDIENTE_CORRECCION"].includes(t.status)
+          ).length
         },
         topProducts,
         topDestinations,
@@ -290,7 +304,17 @@ const reportController = {
     try {
       const { startDate, endDate, type, area, status } = req.query;
       const snapshot = await db.collection('tickets').get();
-      const tickets = snapshot.docs.map((doc) => normalizeTicketDocument(doc));
+      const locations = await listLocations(1000);
+      const tickets = snapshot.docs.map((doc) => {
+        const ticket = normalizeTicketDocument(doc);
+        if (ticket.metadata?.destino) {
+          ticket.metadata = {
+            ...ticket.metadata,
+            destino: canonicalizeLocationName(ticket.metadata.destino, locations),
+          };
+        }
+        return ticket;
+      });
 
       const filtered = tickets.filter((ticket) =>
         matchesAnalyticsFilters(ticket, {

@@ -1,220 +1,205 @@
-/**
- * @fileoverview Real-time monitoring dashboard for ticket automation system.
- * Displays metrics, logs, and alerts with live WebSocket updates.
- */
+import React, { useCallback, useEffect, useState } from 'react'
+import { apiFetchJson } from '../services/apiClient'
+import '../styles/Dashboard.css'
+import '../styles/MetricCard.css'
 
-import React, {useState, useEffect} from 'react';
-import {useRealtimeMetrics} from '../hooks/useRealtimeMetrics';
-import {MetricCard} from './MetricCard';
-import {LogViewer} from './LogViewer';
-import {TimeSeriesChart} from './TimeSeriesChart';
-import '../styles/Dashboard.css';
+const PAGE_SIZE = 20
 
-/**
- * Real-time monitoring dashboard component.
- * Shows system metrics, logs, and alerts updated in real-time via WebSocket.
- *
- * @component
- * @param {Object} props
- * @param {string} [props.firebaseToken] - Firebase auth token for authenticated requests
- * @param {string} [props.userRole] - User role for permission-based features
- * @returns {JSX.Element}
- *
- * @example
- * ```jsx
- * function App() {
- *   const [firebaseToken, setFirebaseToken] = useState(null);
- *   
- *   return (
- *     <Dashboard firebaseToken={firebaseToken} />
- *   );
- * }
- * ```
- */
-export function Dashboard({firebaseToken = null, userRole = null}) {
-  const {
-    metrics,
-    logs,
-    isConnected,
-    connectionStatus,
-    error,
-    filterLogs,
-    reconnect,
-  } = useRealtimeMetrics({
-    token: firebaseToken,
-    enablePolling: true,
-    pollingInterval: 30000,
-  });
+function MetricCard({ title, value, unit = '', tone = 'neutral' }) {
+  return (
+    <div className={`metric-card metric-card--${tone}`}>
+      <span className="metric-card__title">{title}</span>
+      <div className="metric-card__value">
+        <span className="metric-card__number">{value ?? '—'}</span>
+        {unit && <span className="metric-card__unit">{unit}</span>}
+      </div>
+    </div>
+  )
+}
 
-  const [previousMetrics, setPreviousMetrics] = useState(null);
+function formatTimestamp(value) {
+  if (!value) return '—'
+  return new Date(value).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'medium' })
+}
 
-  // Update previous metrics for trend calculation
+export function Dashboard({ userRole = null }) {
+  const isAdmin = userRole === 'admin' || userRole === 'superadmin'
+  const [summary, setSummary] = useState(null)
+  const [logs, setLogs] = useState([])
+  const [alerts, setAlerts] = useState([])
+  const [integrity, setIntegrity] = useState(null)
+  const [pagination, setPagination] = useState({ page: 1, hasNext: false, total: 0 })
+  const [page, setPage] = useState(1)
+  const [filters, setFilters] = useState({ level: '', module: '', eventType: '', requestId: '', ticketId: '', search: '', from: '', to: '' })
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [lastUpdated, setLastUpdated] = useState(null)
+
+  const buildLogQuery = useCallback(() => {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) })
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) params.set(key, key === 'from' || key === 'to' ? new Date(value).toISOString() : value)
+    })
+    return params.toString()
+  }, [filters, page])
+
+  const load = useCallback(async () => {
+    if (!isAdmin) return
+    setError('')
+    try {
+      const requests = [
+        apiFetchJson('/admin/monitoring/summary'),
+        apiFetchJson(`/admin/monitoring/logs?${buildLogQuery()}`),
+        apiFetchJson('/admin/monitoring/alerts?pageSize=10'),
+      ]
+      const [summaryData, logData, alertData] = await Promise.all(requests)
+      setSummary(summaryData)
+      setLogs(logData.logs || [])
+      setPagination(logData.pagination || { page, hasNext: false, total: 0 })
+      setAlerts(alertData.alerts || [])
+      setLastUpdated(new Date())
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [buildLogQuery, isAdmin, page])
+
+  const loadIntegrity = useCallback(async () => {
+    if (!isAdmin) return
+    try {
+      setIntegrity(await apiFetchJson('/admin/monitoring/integrity?limit=200'))
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [isAdmin])
+
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setPreviousMetrics(metrics);
-    }, 5000);
+    setLoading(true)
+    const timer = setTimeout(() => load(), 250)
+    return () => clearTimeout(timer)
+  }, [load])
 
-    return () => clearTimeout(timer);
-  }, [metrics]);
+  useEffect(() => { loadIntegrity() }, [loadIntegrity])
 
-  /**
-   * Determine metric card status based on thresholds.
-   */
-  const getMetricStatus = (metric, value) => {
-    switch (metric) {
-      case 'errorsPerSec':
-        if (value > 1) return 'critical';
-        if (value > 0.5) return 'warning';
-        return 'good';
-      case 'latencyP95':
-        if (value > 500) return 'critical';
-        if (value > 200) return 'warning';
-        return 'good';
-      case 'activeUsers':
-        return 'neutral';
-      default:
-        return 'neutral';
-    }
-  };
+  useEffect(() => {
+    if (!isAdmin) return undefined
+    const timer = setInterval(() => load(), 15000)
+    return () => clearInterval(timer)
+  }, [isAdmin, load])
 
-  /**
-   * Get connection status icon and text.
-   */
-  const getConnectionDisplay = () => {
-    if (isConnected) {
-      return {
-        icon: '🟢',
-        text: 'Connected (WebSocket)',
-        className: 'dashboard__connection--active',
-      };
-    }
-    if (connectionStatus === 'polling') {
-      return {
-        icon: '🟡',
-        text: 'Polling (30s interval)',
-        className: 'dashboard__connection--polling',
-      };
-    }
-    return {
-      icon: '🔴',
-      text: 'Disconnected',
-      className: 'dashboard__connection--inactive',
-    };
-  };
+  const updateFilter = (key, value) => {
+    setPage(1)
+    setFilters((current) => ({ ...current, [key]: value }))
+  }
 
-  const connectionDisplay = getConnectionDisplay();
+  if (!isAdmin) {
+    return <div className="dashboard__error-banner">Se requiere rol de administrador para consultar el monitoreo.</div>
+  }
+
+  const metrics = summary?.metrics || {}
+  const status = summary?.status || 'UNKNOWN'
+  const statusTone = status === 'HEALTHY' ? 'good' : status === 'DEGRADED' ? 'warning' : 'critical'
 
   return (
     <div className="dashboard">
-      {/* Header */}
       <div className="dashboard__header">
-        <div className="dashboard__header-content">
-          <h1 className="dashboard__title">📊 Real-Time Monitoring Dashboard</h1>
-          <p className="dashboard__subtitle">System metrics and event logs</p>
+        <div>
+          <h1 className="dashboard__title">Monitoreo del sistema</h1>
+          <p className="dashboard__subtitle">Estado, errores, latencia, alertas e integridad de tickets.</p>
         </div>
+        <div className={`dashboard__status dashboard__status--${statusTone}`}>
+          {status === 'HEALTHY' ? 'Saludable' : status === 'DEGRADED' ? 'Degradado' : status === 'INCIDENT' ? 'Incidente' : 'Sin datos'}
+        </div>
+      </div>
 
-        <div className="dashboard__header-actions">
-          <div className={`dashboard__connection ${connectionDisplay.className}`}>
-            <span className="dashboard__connection-icon">
-              {connectionDisplay.icon}
-            </span>
-            <span className="dashboard__connection-text">
-              {connectionDisplay.text}
-            </span>
-            {!isConnected && (
-              <button
-                className="dashboard__button dashboard__button--secondary"
-                onClick={reconnect}
-              >
-                Reconnect
-              </button>
-            )}
+      {error && <div className="dashboard__error-banner">{error}</div>}
+
+      <div className="dashboard__metrics-grid">
+        <MetricCard title="Solicitudes / segundo" value={metrics.requestsPerSec} tone="good" />
+        <MetricCard title="Tasa de error reciente" value={((metrics.recentErrorRate || 0) * 100).toFixed(1)} unit="%" tone={(metrics.recentErrorRate || 0) >= 0.05 ? 'warning' : 'good'} />
+        <MetricCard title="Latencia P95" value={metrics.latencyP95} unit="ms" tone={(metrics.latencyP95 || 0) >= 1000 ? 'warning' : 'good'} />
+        <MetricCard title="Usuarios activos" value={metrics.activeUsers} />
+        <MetricCard title="Errores acumulados" value={metrics.totalErrors} tone={(metrics.totalErrors || 0) > 0 ? 'warning' : 'good'} />
+        <MetricCard title="Base de datos" value={summary?.dependencies?.database?.status || '—'} tone={summary?.dependencies?.database?.status === 'UP' ? 'good' : 'critical'} />
+      </div>
+
+      <section className="dashboard__panel">
+        <div className="dashboard__section-heading">
+          <h2>Alertas recientes</h2>
+          <button className="dashboard__button" onClick={() => { load(); loadIntegrity() }} disabled={loading}>{loading ? 'Actualizando…' : 'Actualizar'}</button>
+        </div>
+        {alerts.length === 0 ? <p className="dashboard__empty">Sin alertas activadas en este proceso.</p> : (
+          <div className="dashboard__alert-list">
+            {alerts.map((alert) => (
+              <div className={`dashboard__alert dashboard__alert--${alert.severity.toLowerCase()}`} key={alert.id}>
+                <strong>{alert.type}</strong>
+                <span>{alert.summary}</span>
+                <small>{formatTimestamp(alert.timestamp)} · correlación: {alert.correlationId || '—'}</small>
+              </div>
+            ))}
           </div>
-        </div>
-      </div>
+        )}
+      </section>
 
-      {/* Error Banner */}
-      {error && (
-        <div className="dashboard__error-banner">
-          <div className="dashboard__error-content">
-            <span className="dashboard__error-icon">⚠️</span>
-            <span className="dashboard__error-text">{error}</span>
+      <section className="dashboard__panel">
+        <div className="dashboard__section-heading">
+          <h2>Integridad de tickets</h2>
+          <span>{integrity ? `${integrity.incompleteCount} inconsistencias de ${integrity.scanned} revisados` : 'Pendiente'}</span>
+        </div>
+        {integrity?.incomplete?.length > 0 ? (
+          <div className="dashboard__table-wrap">
+            <table className="dashboard__table"><thead><tr><th>Ticket</th><th>Nivel</th><th>Problemas</th></tr></thead>
+              <tbody>{integrity.incomplete.slice(0, 20).map((item) => <tr key={item.ticketId}><td>{item.ticketId}</td><td>{item.severity}</td><td>{item.issues.join(' ')}</td></tr>)}</tbody>
+            </table>
           </div>
+        ) : <p className="dashboard__empty">No se detectaron tickets incompletos en la muestra reciente.</p>}
+      </section>
+
+      <section className="dashboard__panel">
+        <h2>Endpoints con mayor tasa de fallos</h2>
+        <div className="dashboard__table-wrap">
+          <table className="dashboard__table">
+            <thead><tr><th>Endpoint</th><th>Solicitudes</th><th>Errores</th><th>Tasa</th><th>Latencia media</th></tr></thead>
+            <tbody>{(metrics.endpoints || []).map((endpoint) => (
+              <tr key={endpoint.route}><td>{endpoint.route}</td><td>{endpoint.requests}</td><td>{endpoint.errors}</td><td>{(endpoint.errorRate * 100).toFixed(1)}%</td><td>{endpoint.averageLatencyMs} ms</td></tr>
+            ))}</tbody>
+          </table>
         </div>
-      )}
+      </section>
 
-      {/* Metrics Grid */}
-      <div className="dashboard__metrics">
-        <h2 className="dashboard__section-title">Key Metrics</h2>
-        <div className="dashboard__metrics-grid">
-          <MetricCard
-            title="Requests/sec"
-            value={metrics.requestsPerSec}
-            unit="/s"
-            previousValue={previousMetrics?.requestsPerSec}
-            icon="📈"
-            status="good"
-          />
-          <MetricCard
-            title="Errors/sec"
-            value={metrics.errorsPerSec}
-            unit="/s"
-            previousValue={previousMetrics?.errorsPerSec}
-            icon="❌"
-            status={getMetricStatus('errorsPerSec', metrics.errorsPerSec)}
-          />
-          <MetricCard
-            title="Active Users"
-            value={metrics.activeUsers}
-            unit="users"
-            icon="👥"
-            status="neutral"
-          />
-          <MetricCard
-            title="Latency (P95)"
-            value={metrics.latencyP95}
-            unit="ms"
-            previousValue={previousMetrics?.latencyP95}
-            icon="⏱️"
-            status={getMetricStatus('latencyP95', metrics.latencyP95)}
-          />
+      <section className="dashboard__panel">
+        <div className="dashboard__section-heading"><h2>Logs estructurados</h2><span>{pagination.total || 0} resultados</span></div>
+        <div className="dashboard__filters">
+          <select value={filters.level} onChange={(event) => updateFilter('level', event.target.value)}><option value="">Todos los niveles</option><option>DEBUG</option><option>INFO</option><option>WARN</option><option>ERROR</option><option>FATAL</option></select>
+          <input placeholder="Módulo" value={filters.module} onChange={(event) => updateFilter('module', event.target.value)} />
+          <input placeholder="Tipo de evento" value={filters.eventType} onChange={(event) => updateFilter('eventType', event.target.value)} />
+          <input placeholder="ID de solicitud o correlación" value={filters.requestId} onChange={(event) => updateFilter('requestId', event.target.value)} />
+          <input placeholder="ID de ticket" value={filters.ticketId} onChange={(event) => updateFilter('ticketId', event.target.value)} />
+          <input placeholder="Buscar mensaje" value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} />
+          <input type="datetime-local" value={filters.from} onChange={(event) => updateFilter('from', event.target.value)} aria-label="Desde" />
+          <input type="datetime-local" value={filters.to} onChange={(event) => updateFilter('to', event.target.value)} aria-label="Hasta" />
         </div>
-      </div>
+        <div className="dashboard__table-wrap">
+          <table className="dashboard__table dashboard__logs-table">
+            <thead><tr><th>Hora</th><th>Nivel</th><th>Módulo</th><th>Evento</th><th>Mensaje</th><th>Solicitud</th><th>Duración</th></tr></thead>
+            <tbody>{logs.map((log, index) => (
+              <tr key={`${log.timestamp}-${index}`} className={`dashboard__log--${log.level.toLowerCase()}`}>
+                <td>{formatTimestamp(log.timestamp)}</td><td>{log.level}</td><td>{log.module}</td><td>{log.eventType}</td><td>{log.message}</td><td>{log.requestId || '—'}</td><td>{log.durationMs == null ? '—' : `${log.durationMs} ms`}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+        <div className="dashboard__pagination">
+          <button onClick={() => setPage((value) => value - 1)} disabled={page === 1}>Anterior</button>
+          <span>Página {page}</span>
+          <button onClick={() => setPage((value) => value + 1)} disabled={!pagination.hasNext}>Siguiente</button>
+        </div>
+      </section>
 
-      {/* Time Series Chart */}
-      <div className="dashboard__chart">
-        <TimeSeriesChart
-          requestsPerSec={metrics.requestsPerSec}
-          errorsPerSec={metrics.errorsPerSec}
-          height={300}
-        />
-      </div>
-
-      {/* Logs */}
-      <div className="dashboard__logs">
-        <LogViewer
-          logs={logs}
-          onFilterChange={filterLogs}
-          maxHeight={400}
-        />
-      </div>
-
-      {/* Footer */}
-      <div className="dashboard__footer">
-        <p className="dashboard__footer-text">
-          Last updated: {new Date().toLocaleTimeString('en-US', {
-            hour12: false,
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-          })}
-        </p>
-        <p className="dashboard__footer-info">
-          Total Requests: {metrics.totalRequests} | Total Errors: {metrics.totalErrors}
-        </p>
-      </div>
+      <p className="dashboard__footer-text">Última actualización: {lastUpdated ? lastUpdated.toLocaleTimeString('es-MX') : '—'} · actualización automática cada 15 segundos.</p>
     </div>
-  );
+  )
 }
 
-export default Dashboard;
+export default Dashboard

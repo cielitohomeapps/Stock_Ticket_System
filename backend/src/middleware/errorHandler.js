@@ -1,11 +1,11 @@
+const {logger} = require("../services/observability.service");
+
 /**
  * Global error handler middleware for Express.
  * Must be registered AFTER all other routes and middleware.
  * Converts any unhandled error into a proper JSON response with valid HTTP status code.
  */
 function errorHandler(err, req, res, next) {
-  console.error("[errorHandler] Uncaught error:", err.message, err.stack);
-
   // Determine status code - ensure it's always a valid number
   let statusCode = 500;
   if (typeof err.statusCode === "number" && err.statusCode >= 400 && err.statusCode < 600) {
@@ -25,9 +25,22 @@ function errorHandler(err, req, res, next) {
   }
 
   // Build error response
+  logger.error("Error no controlado en solicitud HTTP", {
+    eventType: "UNHANDLED_HTTP_ERROR",
+    module: "http",
+    requestId: req.id,
+    correlationId: req.correlationId,
+    method: req.method,
+    route: req.path,
+    statusCode,
+  }, err);
+
   const errorResponse = {
-    error: err.message || "Internal Server Error",
+    error: statusCode >= 500 && process.env.NODE_ENV === "production"
+      ? "Error interno del servidor"
+      : err.message || "Internal Server Error",
     status: statusCode,
+    code: err.code || "UNEXPECTED_ERROR",
   };
 
   // Include request ID for tracing if available

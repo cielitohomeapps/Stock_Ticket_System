@@ -13,9 +13,11 @@ const inventoryController = require("./controllers/inventoryController");
 const userController = require("./controllers/userController");
 const locationController = require("./controllers/locationController");
 const reportController = require("./controllers/reportController");
+const {monitoringController, checkDatabase} = require("./controllers/monitoringController");
 
 // Middleware
 const errorHandler = require("./middleware/errorHandler");
+const requestContext = require("./middleware/requestContext");
 const {
   SUPERADMIN_EMAIL,
   requireSuperAdmin,
@@ -51,29 +53,21 @@ function setCachedUser(email, data) {
   }
 }
 
-const {metricsStore} = require("./services/metrics.service");
-
 const app = express();
 
-app.use(cors({origin: true}));
-app.use(express.json());
+const allowedOrigins = (process.env.CORS_ORIGINS || "").split(",").map((value) => value.trim()).filter(Boolean);
+const corsOptions = allowedOrigins.length
+  ? {origin: (origin, callback) => callback(null, !origin || allowedOrigins.includes(origin))}
+  : {origin: process.env.NODE_ENV !== "production"};
+app.use(cors(corsOptions));
+app.use(requestContext);
+app.use(express.json({limit: process.env.JSON_BODY_LIMIT || "256kb"}));
 
 // ── Metrics middleware ────────────────────────────────────────────────────────
 /**
  * Track request latency and status for real-time metrics.
  * Records every request to the metrics store for aggregation.
  */
-app.use((req, res, next) => {
-  const startTime = Date.now();
-  
-  res.on("finish", () => {
-    const durationMs = Date.now() - startTime;
-    const userId = req.user?.id || null;
-    metricsStore.recordRequest(res.statusCode, durationMs, userId);
-  });
-  
-  next();
-});
 
 // Serve static files from the React app build directory
 app.use(express.static(path.join(__dirname, '../../frontend/dist')));
@@ -112,7 +106,9 @@ const swaggerOptions = {
 };
 
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
-app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+if (process.env.NODE_ENV !== "production" || process.env.ENABLE_API_DOCS === "true") {
+  app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+}
 
 // ── Auth middleware ──────────────────────────────────────────────────────────
 
@@ -141,7 +137,7 @@ async function requireUser(req, res, next) {
     let areasPermitidas = [];
     let nombre = "";
 
-    if (email === SUPERADMIN_EMAIL) {
+    if (SUPERADMIN_EMAIL && email === SUPERADMIN_EMAIL) {
       role = "superadmin";
     } else {
       // Check cache first
@@ -208,6 +204,14 @@ async function requireUser(req, res, next) {
  */
 app.get("/api/health", (_req, res) => {
   res.json({ok: true, service: "ticket-automation-backend"});
+});
+app.get("/api/health/live", (_req, res) => {
+  res.json({ok: true, status: "UP"});
+});
+app.get("/api/health/ready", async (_req, res) => {
+  const database = await checkDatabase();
+  const ok = database.status === "UP";
+  res.status(ok ? 200 : 503).json({ok, status: ok ? "READY" : "NOT_READY"});
 });
 
 /**
@@ -312,7 +316,9 @@ app.get("/api/tickets/:id/download", requireUser, ticketController.download);
  *         description: Validation error
  */
 app.post("/api/tickets", requireUser, ticketController.create);
+app.post("/api/tickets/submit", requireUser, ticketController.submit);
 app.put("/api/tickets/:id", requireUser, ticketController.update);
+app.put("/api/tickets/:id/submit", requireUser, ticketController.updateAndSubmit);
 
 app.post("/api/tickets/:id/send-review", requireUser, ticketController.sendToReview);
 
@@ -363,6 +369,7 @@ app.post("/api/admin/tickets/:id/approve", requireUser, requireAdmin, ticketCont
 app.post("/api/admin/tickets/:id/reject", requireUser, requireAdmin, ticketController.reject);
 
 app.post("/api/admin/tickets/:id/return", requireUser, requireAdmin, ticketController.returnToCreator);
+app.post("/api/admin/tickets/:id/reconcile-stock", requireUser, requireAdmin, ticketController.reconcileStock);
 
 // ── Admin: users ──────────────────────────────────────────────────────────────
 app.get("/api/admin/users", requireUser, requireAdmin, userController.list);
@@ -378,6 +385,7 @@ app.put("/api/admin/email-config", requireUser, requireSuperAdmin, userControlle
 app.get("/api/locations", requireUser, locationController.list);
 app.post("/api/locations", requireUser, requireAdmin, locationController.create);
 app.patch("/api/locations/:id", requireUser, requireAdmin, locationController.update);
+app.post("/api/locations/:id/merge", requireUser, requireAdmin, locationController.merge);
 app.delete("/api/locations/:id", requireUser, requireAdmin, locationController.delete);
 app.get("/api/reports/locations", requireUser, requireAdmin, locationController.reportByLocation);
 app.get("/api/reports/destinos", requireUser, requireAdmin, locationController.reportByLocation);
@@ -404,11 +412,15 @@ app.get("/api/admin/analytics/tickets", requireUser, requireAdmin, reportControl
  *                 logs:
  *                   type: array
  */
-app.get("/api/metrics/snapshot", requireUser, (req, res) => {
-  res.json({
-    metrics: metricsStore.getSnapshot(),
-    logs: metricsStore.getRecentEvents(50),
-  });
+app.get("/api/metrics/snapshot", requireUser, requireAdmin, monitoringController.summary);
+app.get("/api/admin/monitoring/summary", requireUser, requireAdmin, monitoringController.summary);
+app.get("/api/admin/monitoring/logs", requireUser, requireAdmin, monitoringController.logs);
+app.get("/api/admin/monitoring/alerts", requireUser, requireAdmin, monitoringController.alerts);
+app.get("/api/admin/monitoring/integrity", requireUser, requireAdmin, monitoringController.integrity);
+app.get("/api/admin/health", requireUser, requireAdmin, monitoringController.detailedHealth);
+
+app.use("/api", (req, res) => {
+  res.status(404).json({error: "Endpoint no encontrado", requestId: req.id});
 });
 
 // Catch all handler: send back React's index.html file for client-side routing
