@@ -3,9 +3,10 @@ const {metricsStore} = require("./metrics.service");
 const SENSITIVE_KEY = /authorization|cookie|password|passwd|secret|token|private.?key|credit|card|cvv|content|description/i;
 
 function maskEmail(value) {
-  if (typeof value !== "string" || !value.includes("@")) return value;
-  const [name, domain] = value.split("@");
-  return `${name.slice(0, 2)}***@${domain}`;
+  if (typeof value !== "string") return value;
+  return value.replace(/\b([A-Z0-9._%+-]+)@([A-Z0-9.-]+\.[A-Z]{2,})\b/gi, (_match, name, domain) =>
+    `${name.slice(0, 2)}***@${domain}`
+  );
 }
 
 function sanitize(value, depth = 0) {
@@ -33,6 +34,8 @@ function emit(level, message, context = {}, error = null) {
     message: String(message || "Evento sin mensaje").slice(0, 500),
     ...context,
     errorType: error?.name,
+    errorCode: error?.code,
+    errorMessage: error?.message,
     stack: error?.stack,
   });
 

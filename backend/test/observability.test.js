@@ -18,6 +18,13 @@ test("redacta secretos y enmascara correos antes de registrar contexto", () => {
   assert.equal(result.owner, "pe***@example.com");
 });
 
+test("preserva rutas grpc al sanitizar errores y enmascara correos del stack", () => {
+  const stack = "Error: FAILED_PRECONDITION at node_modules/@grpc/grpc-js/build/src/call.js:32:19 admin@example.com";
+  const result = sanitize(stack);
+  assert.match(result, /@grpc\/grpc-js\/build\/src\/call\.js:32:19/);
+  assert.match(result, /ad\*\*\*@example\.com/);
+});
+
 test("filtra y pagina logs estructurados", () => {
   const store = new MetricsStore({startCleanup: false, eventCapacity: 10});
   store.recordStructuredEvent({level: "INFO", module: "tickets", eventType: "CREATED", message: "uno", requestId: "request-1"});
