@@ -6,6 +6,26 @@ const {
   assertLocationTermsAvailable,
 } = require("./location-normalization");
 
+function validateLocationName(value, {required = true} = {}) {
+  if (value === undefined && !required) return undefined;
+  if (typeof value !== "string" || !value.trim()) throw new Error("name requerido");
+  const normalized = value.trim();
+  if (normalized.length > 200) throw new Error("name no puede exceder 200 caracteres");
+  return normalized;
+}
+
+function validateLocationAliases(values) {
+  if (values === undefined) return undefined;
+  if (!Array.isArray(values)) throw new Error("aliases debe ser una lista");
+  if (values.length > 50) throw new Error("aliases no puede contener más de 50 valores");
+  return values.map((value) => {
+    if (typeof value !== "string" || value.trim().length > 200) {
+      throw new Error("Cada alias debe ser texto de hasta 200 caracteres");
+    }
+    return value.trim();
+  }).filter(Boolean);
+}
+
 function slugify(value) {
   return normalizeLocationName(value).replace(/\s+/g, "-");
 }
@@ -51,12 +71,12 @@ async function listLocations(limit = 1000) {
 }
 
 async function createLocation({ name, aliases = [] }) {
-  if (!name || !String(name).trim()) throw new Error("name requerido");
-  const normalizedName = String(name).trim();
+  const normalizedName = validateLocationName(name);
+  const safeAliases = validateLocationAliases(aliases) || [];
   const slug = slugify(normalizedName);
   const col = db.collection("ubicaciones");
   const existingLocations = await listLocations(1000);
-  const locationAliases = normalizeLocationAliases(normalizedName, aliases);
+  const locationAliases = normalizeLocationAliases(normalizedName, safeAliases);
   assertLocationTermsAvailable({name: normalizedName, aliases: locationAliases}, existingLocations);
 
   const payload = { name: normalizedName, slug, aliases: locationAliases, createdAt: FieldValue.serverTimestamp() };
@@ -73,18 +93,20 @@ async function updateLocation(id, { name, aliases }) {
   if (!existingDoc.exists) throw new Error("Ubicación no encontrada");
   const existingLocation = serializeLocationDoc(existingDoc);
   const existingLocations = await listLocations(1000);
+  const safeName = validateLocationName(name, {required: false});
+  const safeAliases = validateLocationAliases(aliases);
 
   const updates = {};
-  if (name && String(name).trim()) {
-    const normalizedName = String(name).trim();
+  if (safeName) {
+    const normalizedName = safeName;
     const slug = slugify(normalizedName);
     updates.name = normalizedName;
     updates.slug = slug;
   }
-  if (aliases !== undefined || updates.name) {
-    const aliasesToKeep = aliases === undefined
+  if (safeAliases !== undefined || updates.name) {
+    const aliasesToKeep = safeAliases === undefined
       ? existingLocation.aliases
-      : Array.isArray(aliases) ? aliases : [aliases];
+      : safeAliases;
     updates.aliases = normalizeLocationAliases(
         updates.name || existingLocation.name,
         [existingLocation.name, ...aliasesToKeep],

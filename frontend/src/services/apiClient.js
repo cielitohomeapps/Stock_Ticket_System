@@ -1,4 +1,5 @@
 import { auth } from '../config/firebase'
+import { buildApiUrl } from '../utils/apiSecurity.js'
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
@@ -48,7 +49,7 @@ async function fetchWithNetworkError(url, options) {
 }
 
 export async function apiFetch(path, options = {}) {
-  const url = path.startsWith('http') ? path : `${API_BASE}${path}`
+  const url = buildApiUrl(API_BASE, path)
   const method = options.method || 'GET'
 
   const headers = { ...(options.headers || {}) }

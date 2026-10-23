@@ -1,4 +1,5 @@
 const MAX_ITEMS = Number(process.env.TICKET_MAX_ITEMS || 100);
+const {normalizeEmailAddresses, normalizeOptionalText} = require("./input-validation.service");
 const KNOWN_STATUSES = new Set([
   "CREADO",
   "EN_REVISION",
@@ -64,6 +65,7 @@ function normalizeTicketPayload(payload = {}) {
 
     if (!productId) issues.push(`items[${index}].productId es obligatorio.`);
     if (productId.length > 200) issues.push(`items[${index}].productId excede 200 caracteres.`);
+    if (/[\u0000-\u001F\u007F]/.test(productId)) issues.push(`items[${index}].productId contiene caracteres no permitidos.`);
     if (!Number.isFinite(qty) || qty <= 0 || !Number.isSafeInteger(qty)) {
       issues.push(`items[${index}].qty debe ser un entero mayor que cero.`);
     }
@@ -84,9 +86,12 @@ function normalizeTicketPayload(payload = {}) {
     fecha: normalizeDate(rawMetadata.fecha, issues),
   };
 
-  const assignedUsers = Array.isArray(payload.assignedUsers)
-    ? [...new Set(payload.assignedUsers.map((value) => String(value || "").trim()).filter(Boolean))].slice(0, 50)
-    : [];
+  let assignedUsers = [];
+  try {
+    assignedUsers = normalizeEmailAddresses(payload.assignedUsers, {field: "assignedUsers", max: 20});
+  } catch (error) {
+    issues.push(error.message);
+  }
 
   if (issues.length) {
     throw new TicketValidationError("El ticket esta incompleto o contiene datos invalidos.", issues);
@@ -179,6 +184,16 @@ function normalizeStockReconciliationDecision({decision, reason} = {}) {
   return {decision: normalizedDecision, reason: normalizedReason};
 }
 
+function normalizeReviewComment(value) {
+  try {
+    return normalizeOptionalText(value, {field: "comment", max: 1000});
+  } catch (error) {
+    error.statusCode = 400;
+    error.code = "INVALID_REVIEW_COMMENT";
+    throw error;
+  }
+}
+
 module.exports = {
   TicketValidationError,
   normalizeTicketPayload,
@@ -186,4 +201,5 @@ module.exports = {
   timestampToMillis,
   canAccessTicket,
   normalizeStockReconciliationDecision,
+  normalizeReviewComment,
 };

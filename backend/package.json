@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "test": "node --test test/ticket-integrity.test.js test/idempotency.test.js test/observability.test.js test/location-normalization.test.js",
+    "test": "node --test test/ticket-integrity.test.js test/idempotency.test.js test/observability.test.js test/location-normalization.test.js test/security-regressions.test.js",
     "check": "node scripts/check-syntax.js"
   },
   "engines": {
@@ -23,5 +23,8 @@
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "ws": "^8.16.0"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
   }
 }

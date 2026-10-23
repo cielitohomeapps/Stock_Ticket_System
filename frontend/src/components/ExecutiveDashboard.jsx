@@ -225,7 +225,7 @@ useEffect(() => {
           if (!id) return p
 
           try {
-            const res = await fetch(`${apiBase}/inventory/products/${id}`, {
+            const res = await fetch(`${apiBase}/inventory/products/${encodeURIComponent(id)}`, {
               headers: { Authorization: `Bearer ${firebaseToken}` }
             })
             if (!res.ok) throw new Error('No se encontró el producto')

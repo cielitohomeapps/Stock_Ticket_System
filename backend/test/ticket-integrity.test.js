@@ -6,6 +6,7 @@ const {
   evaluateTicketIntegrity,
   canAccessTicket,
   normalizeStockReconciliationDecision,
+  normalizeReviewComment,
 } = require("../src/services/ticket-integrity.service");
 
 const validPayload = {
@@ -40,6 +41,17 @@ test("rechaza productos duplicados para evitar escrituras ambiguas", () => {
   assert.throws(
       () => normalizeTicketPayload({...validPayload, items: [{productId: "A", qty: 1}, {productId: "A", qty: 2}]}),
       /incompleto/i,
+  );
+});
+
+test("rechaza destinatarios arbitrarios y caracteres de control en productos", () => {
+  assert.throws(
+      () => normalizeTicketPayload({...validPayload, assignedUsers: ["victim@example.com\r\nBcc: attacker@example.com"]}),
+      (error) => error instanceof TicketValidationError && error.details.some((detail) => detail.includes("assignedUsers")),
+  );
+  assert.throws(
+      () => normalizeTicketPayload({...validPayload, items: [{productId: "SKU\n1", qty: 1}]}),
+      (error) => error instanceof TicketValidationError && error.details.some((detail) => detail.includes("caracteres")),
   );
 });
 
@@ -83,5 +95,13 @@ test("valida y normaliza la decisión administrativa de conciliación", () => {
   assert.throws(
       () => normalizeStockReconciliationDecision({decision: "RETRY", reason: ""}),
       (error) => error.code === "INVALID_STOCK_RECONCILIATION" && error.statusCode === 400,
+  );
+});
+
+test("limita comentarios administrativos antes de persistirlos", () => {
+  assert.equal(normalizeReviewComment("  corregir cantidad  "), "corregir cantidad");
+  assert.throws(
+      () => normalizeReviewComment("x".repeat(1001)),
+      (error) => error.code === "INVALID_REVIEW_COMMENT" && error.statusCode === 400,
   );
 });

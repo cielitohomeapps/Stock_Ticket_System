@@ -19,6 +19,15 @@ const {monitoringController, checkDatabase} = require("./controllers/monitoringC
 const errorHandler = require("./middleware/errorHandler");
 const requestContext = require("./middleware/requestContext");
 const {
+  securityHeaders,
+  noStoreApiResponses,
+  createRateLimiter,
+} = require("./middleware/security");
+const {
+  requireBodyAreaAccess,
+  requireQueryAreaAccess,
+} = require("./services/area-access.service");
+const {
   SUPERADMIN_EMAIL,
   requireSuperAdmin,
   requireAdmin,
@@ -27,41 +36,35 @@ const {
 
 const ADMIN_ROLES = ["admin", "superadmin"];
 
-// ── User cache ────────────────────────────────────────────────────────────────
-// Cache Firestore user lookups to reduce latency and Firestore reads.
-// TTL: 5 minutes. Keyed by email.
-const userCache = new Map();
-const USER_CACHE_TTL_MS = 5 * 60 * 1000;
-
-function getCachedUser(email) {
-  const entry = userCache.get(email);
-  if (entry && Date.now() - entry.ts < USER_CACHE_TTL_MS) {
-    return entry.data;
-  }
-  userCache.delete(email);
-  return null;
-}
-
-function setCachedUser(email, data) {
-  userCache.set(email, {data, ts: Date.now()});
-  // Evict stale entries periodically
-  if (userCache.size > 500) {
-    const now = Date.now();
-    for (const [key, val] of userCache) {
-      if (now - val.ts > USER_CACHE_TTL_MS) userCache.delete(key);
-    }
-  }
-}
-
+// ── Express app and cross-cutting security controls ──────────────────────────
 const app = express();
+app.disable("x-powered-by");
 
 const allowedOrigins = (process.env.CORS_ORIGINS || "").split(",").map((value) => value.trim()).filter(Boolean);
 const corsOptions = allowedOrigins.length
   ? {origin: (origin, callback) => callback(null, !origin || allowedOrigins.includes(origin))}
   : {origin: process.env.NODE_ENV !== "production"};
+app.use(securityHeaders);
 app.use(cors(corsOptions));
 app.use(requestContext);
+app.use("/api", noStoreApiResponses);
 app.use(express.json({limit: process.env.JSON_BODY_LIMIT || "256kb"}));
+
+const ticketSubmissionRateLimit = createRateLimiter({
+  windowMs: Number(process.env.TICKET_SUBMIT_RATE_WINDOW_MS || 60000),
+  max: Number(process.env.TICKET_SUBMIT_RATE_MAX || 20),
+  scope: "ticket-submit",
+});
+const privilegedMutationRateLimit = createRateLimiter({
+  windowMs: Number(process.env.PRIVILEGED_RATE_WINDOW_MS || 60000),
+  max: Number(process.env.PRIVILEGED_RATE_MAX || 60),
+  scope: "privileged-mutation",
+});
+const inventoryReadRateLimit = createRateLimiter({
+  windowMs: Number(process.env.INVENTORY_READ_RATE_WINDOW_MS || 60000),
+  max: Number(process.env.INVENTORY_READ_RATE_MAX || 120),
+  scope: "inventory-read",
+});
 
 // ── Metrics middleware ────────────────────────────────────────────────────────
 /**
@@ -114,7 +117,8 @@ if (process.env.NODE_ENV !== "production" || process.env.ENABLE_API_DOCS === "tr
 
 async function requireUser(req, res, next) {
   const authorization = req.header("authorization") || "";
-  const token = authorization.replace(/^Bearer\s+/i, "").trim();
+  const match = authorization.match(/^Bearer\s+(\S+)$/i);
+  const token = match?.[1] || "";
 
   if (!token) {
     return res.status(401).json({error: "Authorization header requerido"});
@@ -130,7 +134,7 @@ async function requireUser(req, res, next) {
   }
 
   try {
-    const decoded = await admin.auth().verifyIdToken(token);
+    const decoded = await admin.auth().verifyIdToken(token, true);
     const email = (decoded.email || "").toLowerCase().trim();
 
     let role = "usuario";
@@ -140,31 +144,21 @@ async function requireUser(req, res, next) {
     if (SUPERADMIN_EMAIL && email === SUPERADMIN_EMAIL) {
       role = "superadmin";
     } else {
-      // Check cache first
-      const cached = getCachedUser(email);
-      if (cached) {
-        role = cached.role;
-        areasPermitidas = cached.areasPermitidas;
-        nombre = cached.nombre;
-      } else {
-        // Look up user in Firestore usuarios collection
-        const userSnap = await db.collection("usuarios")
-            .where("email", "==", email)
-            .limit(1)
-            .get();
-        if (userSnap.empty) {
-          return res.status(403).json({
-            error: "Tu cuenta no está registrada en el sistema. Contacta al administrador para obtener acceso.",
-            code: "USER_NOT_REGISTERED",
-            email,
-          });
-        }
-        const userData = userSnap.docs[0].data();
-        role = userData.rol || userData.role || "usuario";
-        areasPermitidas = Array.isArray(userData.areasPermitidas) ? userData.areasPermitidas : [];
-        nombre = userData.nombre || "";
-        setCachedUser(email, {role, areasPermitidas, nombre});
+      // Read authorization data on every request so role revocations are immediate.
+      const userSnap = await db.collection("usuarios")
+          .where("email", "==", email)
+          .limit(1)
+          .get();
+      if (userSnap.empty) {
+        return res.status(403).json({
+          error: "Tu cuenta no está registrada en el sistema. Contacta al administrador para obtener acceso.",
+          code: "USER_NOT_REGISTERED",
+        });
       }
+      const userData = userSnap.docs[0].data();
+      role = userData.rol || userData.role || "usuario";
+      areasPermitidas = Array.isArray(userData.areasPermitidas) ? userData.areasPermitidas : [];
+      nombre = userData.nombre || "";
     }
 
     req.user = {
@@ -231,7 +225,7 @@ app.get("/api/health/ready", async (_req, res) => {
  *       400:
  *         description: Error
  */
-app.get("/api/inventory/products/:id", requireUser, inventoryController.getProduct);
+app.get("/api/inventory/products/:id", requireUser, inventoryReadRateLimit, inventoryController.getProduct);
 
 /**
  * @swagger
@@ -249,7 +243,7 @@ app.get("/api/inventory/products/:id", requireUser, inventoryController.getProdu
  *       400:
  *         description: Error
  */
-app.get("/api/inventory/products", requireUser, inventoryController.getProducts);
+app.get("/api/inventory/products", requireUser, inventoryReadRateLimit, requireQueryAreaAccess, inventoryController.getProducts);
 
 /**
  * @swagger
@@ -262,7 +256,7 @@ app.get("/api/inventory/products", requireUser, inventoryController.getProducts)
  *       400:
  *         description: Error
  */
-app.get("/api/inventory/areas", requireUser, inventoryController.getAreas);
+app.get("/api/inventory/areas", requireUser, inventoryReadRateLimit, inventoryController.getAreas);
 
 /**
  * @swagger
@@ -315,14 +309,14 @@ app.get("/api/tickets/:id/download", requireUser, ticketController.download);
  *       400:
  *         description: Validation error
  */
-app.post("/api/tickets", requireUser, ticketController.create);
-app.post("/api/tickets/submit", requireUser, ticketController.submit);
-app.put("/api/tickets/:id", requireUser, ticketController.update);
-app.put("/api/tickets/:id/submit", requireUser, ticketController.updateAndSubmit);
+app.post("/api/tickets", requireUser, ticketSubmissionRateLimit, requireBodyAreaAccess, ticketController.create);
+app.post("/api/tickets/submit", requireUser, ticketSubmissionRateLimit, requireBodyAreaAccess, ticketController.submit);
+app.put("/api/tickets/:id", requireUser, ticketSubmissionRateLimit, requireBodyAreaAccess, ticketController.update);
+app.put("/api/tickets/:id/submit", requireUser, ticketSubmissionRateLimit, requireBodyAreaAccess, ticketController.updateAndSubmit);
 
-app.post("/api/tickets/:id/send-review", requireUser, ticketController.sendToReview);
+app.post("/api/tickets/:id/send-review", requireUser, ticketSubmissionRateLimit, ticketController.sendToReview);
 
-app.post("/api/tickets/:id/review", requireUser, requireApprover, ticketController.review);
+app.post("/api/tickets/:id/review", requireUser, requireApprover, privilegedMutationRateLimit, ticketController.review);
 
 app.get("/api/tickets/:id", requireUser, ticketController.getById);
 
@@ -364,29 +358,29 @@ app.get("/api/me", requireUser, (req, res) => {
  */
 app.get("/api/admin/tickets", requireUser, requireAdmin, ticketController.getAll);
 
-app.post("/api/admin/tickets/:id/approve", requireUser, requireAdmin, ticketController.approve);
+app.post("/api/admin/tickets/:id/approve", requireUser, requireAdmin, privilegedMutationRateLimit, ticketController.approve);
 
-app.post("/api/admin/tickets/:id/reject", requireUser, requireAdmin, ticketController.reject);
+app.post("/api/admin/tickets/:id/reject", requireUser, requireAdmin, privilegedMutationRateLimit, ticketController.reject);
 
-app.post("/api/admin/tickets/:id/return", requireUser, requireAdmin, ticketController.returnToCreator);
-app.post("/api/admin/tickets/:id/reconcile-stock", requireUser, requireAdmin, ticketController.reconcileStock);
+app.post("/api/admin/tickets/:id/return", requireUser, requireAdmin, privilegedMutationRateLimit, ticketController.returnToCreator);
+app.post("/api/admin/tickets/:id/reconcile-stock", requireUser, requireAdmin, privilegedMutationRateLimit, ticketController.reconcileStock);
 
 // ── Admin: users ──────────────────────────────────────────────────────────────
 app.get("/api/admin/users", requireUser, requireAdmin, userController.list);
-app.post("/api/admin/users", requireUser, requireAdmin, userController.create);
-app.patch("/api/admin/users/:uid", requireUser, requireAdmin, userController.update);
-app.delete("/api/admin/users/:uid", requireUser, requireAdmin, userController.delete);
+app.post("/api/admin/users", requireUser, requireAdmin, privilegedMutationRateLimit, userController.create);
+app.patch("/api/admin/users/:uid", requireUser, requireAdmin, privilegedMutationRateLimit, userController.update);
+app.delete("/api/admin/users/:uid", requireUser, requireAdmin, privilegedMutationRateLimit, userController.delete);
 
 // ── Admin: email config ───────────────────────────────────────────────────────
 app.get("/api/admin/email-config", requireUser, requireAdmin, userController.getEmailConfig);
-app.put("/api/admin/email-config", requireUser, requireSuperAdmin, userController.updateEmailConfig);
+app.put("/api/admin/email-config", requireUser, requireSuperAdmin, privilegedMutationRateLimit, userController.updateEmailConfig);
 
 // ── Locations: canonical catalog and reports ───────────────────────────────────
 app.get("/api/locations", requireUser, locationController.list);
-app.post("/api/locations", requireUser, requireAdmin, locationController.create);
-app.patch("/api/locations/:id", requireUser, requireAdmin, locationController.update);
-app.post("/api/locations/:id/merge", requireUser, requireAdmin, locationController.merge);
-app.delete("/api/locations/:id", requireUser, requireAdmin, locationController.delete);
+app.post("/api/locations", requireUser, requireAdmin, privilegedMutationRateLimit, locationController.create);
+app.patch("/api/locations/:id", requireUser, requireAdmin, privilegedMutationRateLimit, locationController.update);
+app.post("/api/locations/:id/merge", requireUser, requireAdmin, privilegedMutationRateLimit, locationController.merge);
+app.delete("/api/locations/:id", requireUser, requireAdmin, privilegedMutationRateLimit, locationController.delete);
 app.get("/api/reports/locations", requireUser, requireAdmin, locationController.reportByLocation);
 app.get("/api/reports/destinos", requireUser, requireAdmin, locationController.reportByLocation);
 app.get("/api/reports/executive", requireUser, requireAdmin, reportController.getExecutiveReport);

@@ -117,7 +117,7 @@ function normalizeItems(items) {
     const productId = item.productId || item.id || item.sku;
     const qty = Number(item.qty);
 
-    if (!productId || !Number.isFinite(qty) || qty <= 0) {
+    if (!productId || !Number.isSafeInteger(qty) || qty <= 0) {
       throw serviceError("Cada producto debe tener identificador y una cantidad mayor que cero.", 400, "INVALID_TICKET");
     }
 
@@ -182,7 +182,7 @@ async function processInventoryMovements(ticket, clientToken) {
         processedItems.push({ item, op: 'ENTRY' });
       } else {
         // For EXIT: fetch current stock first to validate sufficiency.
-        const detail = await getProductById(item.productId, clientToken);
+        const detail = await getProductById(item.productId, clientToken, {allowServiceFallback: true});
         
         const product = detail?.data || detail || {};
         
@@ -326,6 +326,7 @@ async function finalizeSuccess(ticketId, approverUserId, movementResults) {
       stockMovementId: movementRef.id,
       stockProcessing: false,
       stockError: FieldValue.delete(),
+      stockErrorCode: FieldValue.delete(),
       stockSyncStatus: FieldValue.delete(),
       stockOutcomeUnknownAt: FieldValue.delete(),
       stockOutcomeResolution: "APPLIED",
@@ -334,13 +335,14 @@ async function finalizeSuccess(ticketId, approverUserId, movementResults) {
   });
 }
 
-async function finalizeFailure(ticketId, errorMessage, outcomeUnknown) {
+async function finalizeFailure(ticketId, error, outcomeUnknown) {
   const ticketRef = db.collection("tickets").doc(ticketId);
   await ticketRef.update({
     stockProcessing: false,
     stockError: outcomeUnknown
       ? "El resultado del movimiento no pudo confirmarse. Verifica el sistema de inventarios antes de reintentar."
-      : errorMessage,
+      : "No se pudo completar el movimiento de inventario.",
+    stockErrorCode: String(error?.code || error?.name || "INVENTORY_ERROR").slice(0, 100),
     stockSyncStatus: outcomeUnknown ? "UNKNOWN" : FieldValue.delete(),
     stockOutcomeUnknownAt: outcomeUnknown ? FieldValue.serverTimestamp() : FieldValue.delete(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -361,7 +363,7 @@ async function applyStockMovementForTicket(ticketId, approverUserId, clientToken
       throw markOutcomeUnknown(error);
     }
   } catch (error) {
-    await finalizeFailure(ticketId, error.message, error.stockOutcomeUnknown === true);
+    await finalizeFailure(ticketId, error, error.stockOutcomeUnknown === true);
     throw error;
   }
 }
@@ -421,6 +423,7 @@ async function reconcileUnknownStockMovement(ticketId, adminUserId, input) {
         stockMovementId: movementRef.id,
         stockProcessing: false,
         stockError: FieldValue.delete(),
+        stockErrorCode: FieldValue.delete(),
         stockSyncStatus: FieldValue.delete(),
         stockOutcomeUnknownAt: FieldValue.delete(),
         stockOutcomeResolution: "APPLIED",
@@ -430,6 +433,7 @@ async function reconcileUnknownStockMovement(ticketId, adminUserId, input) {
       trx.update(ticketRef, {
         stockProcessing: false,
         stockError: FieldValue.delete(),
+        stockErrorCode: FieldValue.delete(),
         stockSyncStatus: FieldValue.delete(),
         stockOutcomeUnknownAt: FieldValue.delete(),
         stockOutcomeResolution: "NOT_APPLIED",

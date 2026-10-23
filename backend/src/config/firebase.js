@@ -2,6 +2,19 @@ const admin = require("firebase-admin");
 const path = require("path");
 const fs = require("fs");
 
+function normalizePrivateKey(value) {
+  let privateKey = String(value || "").trim();
+  if ((privateKey.startsWith('"') && privateKey.endsWith('"')) ||
+      (privateKey.startsWith("'") && privateKey.endsWith("'"))) {
+    privateKey = privateKey.slice(1, -1);
+  }
+  privateKey = privateKey.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\r\n/g, "\n");
+  if (!privateKey.includes("-----BEGIN PRIVATE KEY-----") || !privateKey.includes("-----END PRIVATE KEY-----")) {
+    throw new Error("Firebase private key must be a complete PEM value with BEGIN/END PRIVATE KEY markers.");
+  }
+  return privateKey;
+}
+
 // ── Default app (inventory system) ────────────────────────────────────────────
 // Used for: auth verification, inventory API token generation, usuarios lookup
 function tryInitFromEnv() {
@@ -13,7 +26,7 @@ function tryInitFromEnv() {
     return false;
   }
 
-  const privateKey = privateKeyRaw.replace(/\\n/g, "\n");
+  const privateKey = normalizePrivateKey(privateKeyRaw);
   admin.initializeApp({
     credential: admin.credential.cert({
       projectId,
@@ -56,6 +69,9 @@ function initTicketApp() {
   const ticketProjectId = process.env.TICKET_FIREBASE_PROJECT_ID || "";
   const ticketClientEmail = process.env.TICKET_FIREBASE_CLIENT_EMAIL || "";
   const ticketPrivateKeyRaw = process.env.TICKET_FIREBASE_PRIVATE_KEY || "";
+  const ticketEnvValues = [ticketProjectId, ticketClientEmail, ticketPrivateKeyRaw];
+  const hasTicketEnv = ticketEnvValues.some(Boolean);
+  const hasCompleteTicketEnv = ticketEnvValues.every(Boolean);
 
   const TICKET_APP_NAME = "ticketApp";
 
@@ -66,8 +82,12 @@ function initTicketApp() {
     return;
   }
 
-  if (ticketProjectId && ticketClientEmail && ticketPrivateKeyRaw) {
-    const ticketPrivateKey = ticketPrivateKeyRaw.replace(/\\n/g, "\n");
+  if (hasTicketEnv && !hasCompleteTicketEnv) {
+    throw new Error("Incomplete TicketDatabase credentials. Set TICKET_FIREBASE_PROJECT_ID, TICKET_FIREBASE_CLIENT_EMAIL, and TICKET_FIREBASE_PRIVATE_KEY together.");
+  }
+
+  if (hasCompleteTicketEnv) {
+    const ticketPrivateKey = normalizePrivateKey(ticketPrivateKeyRaw);
     const ticketApp = admin.initializeApp({
       credential: admin.credential.cert({
         projectId: ticketProjectId,
@@ -84,6 +104,8 @@ function initTicketApp() {
     }, TICKET_APP_NAME);
     ticketDb = ticketApp.firestore();
     console.log(`[firebase] Ticket app initialized via service account (project: ${ticketServiceAccount.project_id})`);
+  } else if (process.env.NODE_ENV === "production") {
+    throw new Error("TicketDatabase credentials are required in production; refusing to use the inventory database for tickets.");
   } else {
     console.warn("[firebase] No ticket DB configured. Using default DB for all collections. " +
       "Set TICKET_FIREBASE_PROJECT_ID/TICKET_FIREBASE_CLIENT_EMAIL/TICKET_FIREBASE_PRIVATE_KEY " +

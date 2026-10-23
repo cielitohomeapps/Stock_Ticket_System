@@ -7,25 +7,39 @@ const {
 } = require("../services/location.service");
 const {canonicalizeLocationName} = require("../services/location-normalization");
 const { ticketDb: db } = require("../config/firebase");
+const {logger} = require("../services/observability.service");
+const {addAuditEntry} = require("../services/audit.service");
 
-function respondLocationError(res, error) {
+function respondLocationError(req, res, error) {
   const suppliedStatus = Number(error.statusCode);
   const statusCode = Number.isInteger(suppliedStatus) && suppliedStatus >= 400 && suppliedStatus < 600
     ? suppliedStatus
-    : 400;
+    : 500;
+  const context = {
+    eventType: "LOCATION_OPERATION_FAILED",
+    module: "locations",
+    requestId: req.id,
+    correlationId: req.correlationId,
+    errorType: error.code || error.name,
+  };
+  if (statusCode >= 500) logger.error("Fallo al consultar ubicaciones", context, error);
+  else logger.warn("Operacion de ubicacion rechazada", context, error);
   return res.status(statusCode).json({
-    error: error.message || "No se pudo completar la operación de ubicación.",
+    error: statusCode >= 500 && process.env.NODE_ENV === "production"
+      ? "No se pudo completar la operación de ubicación. Inténtalo más tarde o contacta al administrador."
+      : error.message || "No se pudo completar la operación de ubicación.",
     ...(error.code ? {code: error.code} : {}),
+    requestId: req.id,
   });
 }
 
 const locationController = {
-  list: async (_req, res) => {
+  list: async (req, res) => {
     try {
       const locations = await listLocations(1000);
       return res.json({ locations });
     } catch (error) {
-      return respondLocationError(res, error);
+      return respondLocationError(req, res, error);
     }
   },
 
@@ -33,9 +47,10 @@ const locationController = {
     try {
       const { name, aliases } = req.body;
       const created = await createLocation({ name, aliases });
+      await addAuditEntry("locations", "LOCATION_CREATED", req.user.id, {locationId: created.id});
       return res.status(201).json(created);
     } catch (error) {
-      return respondLocationError(res, error);
+      return respondLocationError(req, res, error);
     }
   },
 
@@ -44,9 +59,10 @@ const locationController = {
       const { id } = req.params;
       const { name, aliases } = req.body;
       const updated = await updateLocation(id, { name, aliases });
+      await addAuditEntry("locations", "LOCATION_UPDATED", req.user.id, {locationId: id});
       return res.json(updated);
     } catch (error) {
-      return respondLocationError(res, error);
+      return respondLocationError(req, res, error);
     }
   },
 
@@ -56,7 +72,7 @@ const locationController = {
       const merged = await mergeLocations(targetId, req.body.sourceLocationId, req.user?.id);
       return res.json({ok: true, location: merged});
     } catch (error) {
-      return respondLocationError(res, error);
+      return respondLocationError(req, res, error);
     }
   },
 
@@ -64,9 +80,10 @@ const locationController = {
     try {
       const { id } = req.params;
       await deleteLocation(id);
+      await addAuditEntry("locations", "LOCATION_DELETED", req.user.id, {locationId: id});
       return res.json({ ok: true });
     } catch (error) {
-      return respondLocationError(res, error);
+      return respondLocationError(req, res, error);
     }
   },
 
@@ -103,7 +120,7 @@ const locationController = {
       const rows = Object.values(agg).sort((a, b) => b.ticketCount - a.ticketCount);
       return res.json({ rows, totalItems, totalTickets, groupBy, title: groupBy === 'destino' ? 'Destino' : 'Área' });
     } catch (error) {
-      return res.status(400).json({ error: error.message });
+      return respondLocationError(req, res, error);
     }
   },
 };

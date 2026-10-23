@@ -8,6 +8,11 @@ const {
   saveEmailConfig,
 } = require("../services/user.service");
 const {addAuditEntry} = require("../services/audit.service");
+const {
+  canCreateUser,
+  canUpdateUser,
+  canDeleteUser,
+} = require("../services/user-policy.service");
 
 const userController = {
   // GET /api/admin/users
@@ -25,13 +30,12 @@ const userController = {
     try {
       const {email, rol, areasPermitidas, nombre} = req.body;
 
-      // Solo superadmin puede crear admins o superadmins
-      if (req.user.role !== "superadmin" && ["admin", "superadmin"].includes(rol)) {
+      if (!canCreateUser(req.user, rol)) {
         return res.status(403).json({error: "Solo un superadmin puede crear administradores"});
       }
 
       const result = await createUser({email, rol, areasPermitidas, nombre});
-      await addAuditEntry("users", "USER_CREATED", req.user.id, {email, rol});
+      await addAuditEntry("users", "USER_CREATED", req.user.id, {userId: result.id, rol});
       return res.status(201).json(result);
     } catch (error) {
       return res.status(400).json({error: error.message});
@@ -42,10 +46,11 @@ const userController = {
   update: async (req, res) => {
     try {
       const {rol, areasPermitidas, nombre} = req.body;
+      const targetUser = await getUserById(req.params.uid);
+      if (!targetUser) return res.status(404).json({error: "Usuario no encontrado"});
 
-      // Solo superadmin puede cambiar el rol a admin/superadmin
-      if (req.user.role !== "superadmin" && ["admin", "superadmin"].includes(rol)) {
-        return res.status(403).json({error: "Solo un superadmin puede asignar roles administrativos"});
+      if (!canUpdateUser(req.user, targetUser, rol)) {
+        return res.status(403).json({error: "Solo un superadmin puede modificar usuarios administrativos"});
       }
 
       const result = await updateUser(req.params.uid, {rol, areasPermitidas, nombre});
@@ -61,12 +66,10 @@ const userController = {
     try {
       const targetUid = req.params.uid;
 
-      // Solo superadmin puede eliminar admins o superadmins
       const targetUser = await getUserById(targetUid);
-      if (targetUser && ["admin", "superadmin"].includes(targetUser.rol)) {
-        if (req.user.role !== "superadmin") {
-          return res.status(403).json({error: "Solo un superadmin puede eliminar administradores"});
-        }
+      if (!targetUser) return res.status(404).json({error: "Usuario no encontrado"});
+      if (!canDeleteUser(req.user, targetUser)) {
+        return res.status(403).json({error: "No tienes permiso para eliminar este usuario"});
       }
 
       await deleteUser(targetUid);
@@ -92,6 +95,10 @@ const userController = {
     try {
       const {recipients, ccRecipients, fromName} = req.body;
       await saveEmailConfig({recipients, ccRecipients, fromName});
+      await addAuditEntry("config:emails", "EMAIL_CONFIG_UPDATED", req.user.id, {
+        recipientCount: Array.isArray(recipients) ? recipients.length : 0,
+        ccRecipientCount: Array.isArray(ccRecipients) ? ccRecipients.length : 0,
+      });
       return res.json({ok: true});
     } catch (error) {
       return res.status(400).json({error: error.message});

@@ -7,7 +7,7 @@
 
 require("dotenv").config();
 
-const INVENTORY_API_BASE = (process.env.INVENTORY_API_BASE_URL || "https://cielitohome-storage-backend.onrender.com/api").replace(/\/$/, "");
+const INVENTORY_API_BASE = (process.env.INVENTORY_API_BASE_URL || "").replace(/\/$/, "");
 const STATIC_TOKEN = (process.env.INVENTORY_STATIC_BEARER_TOKEN || "").trim();
 const API_KEY = (process.env.INVENTORY_AUTH_API_KEY || "").trim();
 const SERVICE_UID = process.env.INVENTORY_SERVICE_UID || "inventory-service";
@@ -57,10 +57,10 @@ async function getServiceToken() {
     });
 
     if (response.ok && payload?.token) {
-      console.log(`  ✓ Generated dynamic token: ${payload.token.substring(0, 20)}...`);
+      console.log("  ✓ Generated dynamic token (value redacted)");
       return payload.token;
     } else {
-      console.log(`  ✗ Failed to generate token: ${response.status} - ${JSON.stringify(payload)}`);
+      console.log(`  ✗ Failed to generate token: HTTP ${response.status}`);
       return null;
     }
   } catch (error) {
@@ -90,7 +90,10 @@ async function testEndpoint(method, path, body = null, token = null) {
     const { response, payload } = await fetchWithTimeout(url, options);
     console.log(`  ✓ ${method} ${path}`);
     console.log(`    Status: ${response.status}`);
-    console.log(`    Response:`, JSON.stringify(payload, null, 4).split("\n").slice(0, 5).join("\n"));
+    const responseShape = payload && typeof payload === "object"
+      ? Object.keys(payload).slice(0, 20).join(", ")
+      : typeof payload;
+    console.log(`    Response shape: ${responseShape || "empty"}`);
     return { status: response.status, payload };
   } catch (error) {
     console.log(`  ✗ ${method} ${path}`);
@@ -100,6 +103,14 @@ async function testEndpoint(method, path, body = null, token = null) {
 }
 
 async function runTests() {
+  if (!INVENTORY_API_BASE) {
+    throw new Error("INVENTORY_API_BASE_URL must be configured explicitly.");
+  }
+  const target = new URL(INVENTORY_API_BASE);
+  const isLocal = ["localhost", "127.0.0.1", "::1"].includes(target.hostname);
+  if (!isLocal && process.env.ALLOW_EXTERNAL_DIAGNOSTICS !== "true") {
+    throw new Error("Refusing to test a non-local inventory API without ALLOW_EXTERNAL_DIAGNOSTICS=true.");
+  }
   console.log("\n" + "=".repeat(80));
   console.log("INVENTORY API DIAGNOSTIC");
   console.log("=".repeat(80));
@@ -125,11 +136,6 @@ async function runTests() {
     console.log("\n4. Testing with DYNAMIC TOKEN...");
     await testEndpoint("GET", "/productos", null, dynamicToken);
 
-    console.log("\n5. Testing discount endpoint with dynamic token...");
-    await testEndpoint("POST", "/productos/TEST-PRODUCT-ID/descontar", {
-      cantidad: 5,
-      motivo: "Test",
-    }, dynamicToken);
   }
 
   console.log("\n" + "=".repeat(80));

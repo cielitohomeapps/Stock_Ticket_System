@@ -1,4 +1,5 @@
 const {Resend} = require("resend");
+const {normalizeEmailAddresses} = require("./input-validation.service");
 
 const {RESEND_API_KEY, MAIL_FROM} = process.env;
 
@@ -16,7 +17,7 @@ async function sendTicketNotification({to, subject, html}) {
     throw new Error("Resend no configurado. Revisa RESEND_API_KEY y MAIL_FROM en .env.");
   }
 
-  const recipients = Array.isArray(to) ? to : [to];
+  const recipients = normalizeEmailAddresses(Array.isArray(to) ? to : [to], {field: "to", max: 100});
   if (!recipients.length) {
     return;
   }

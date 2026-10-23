@@ -2,9 +2,11 @@ const {ticketDb: db, FieldValue} = require("../config/firebase");
 const {STATUS} = require("./stock.service");
 const {getProductById} = require("./inventory-api.service");
 const {resolveLocationRecord} = require("./location.service");
+const {normalizeArea, extractProductArea} = require("./area-access.service");
 const {
   normalizeTicketPayload,
   evaluateTicketIntegrity,
+  normalizeReviewComment,
 } = require("./ticket-integrity.service");
 const {logger} = require("./observability.service");
 const {alertManager} = require("./alert.service");
@@ -91,14 +93,25 @@ function extractStock(product) {
 }
 
 async function validateStockAvailability(ticket, clientToken) {
-  if (ticket.type !== "EXIT") return;
   for (const item of ticket.items) {
     let detail;
     try {
-      detail = await getProductById(item.productId, clientToken);
+      detail = await getProductById(item.productId, clientToken, {allowServiceFallback: true});
     } catch (error) {
       throw serviceError(`No se pudo validar el inventario del producto ${item.productId}.`, 502, "INVENTORY_UNAVAILABLE");
     }
+    const productArea = extractProductArea(detail);
+    if (!productArea) {
+      throw serviceError(`El inventario no devolvio un area valida para ${item.productId}.`, 502, "INVALID_INVENTORY_RESPONSE");
+    }
+    if (normalizeArea(productArea) !== normalizeArea(ticket.metadata?.area)) {
+      throw serviceError(
+          `El producto ${item.productId} no pertenece al area indicada en el ticket.`,
+          400,
+          "PRODUCT_AREA_MISMATCH",
+      );
+    }
+    if (ticket.type !== "EXIT") continue;
     const currentStock = extractStock(detail);
     if (currentStock === null) {
       throw serviceError(`El inventario no devolvio stock valido para ${item.productId}.`, 502, "INVALID_INVENTORY_RESPONSE");
@@ -366,6 +379,7 @@ async function sendToReview(ticketId, requestedBy, clientToken) {
 }
 
 async function rejectTicket(ticketId, approverUserId, comment) {
+  const safeComment = normalizeReviewComment(comment);
   const ticketRef = db.collection("tickets").doc(ticketId);
   await db.runTransaction(async (trx) => {
     const ticketDoc = await trx.get(ticketRef);
@@ -388,7 +402,7 @@ async function rejectTicket(ticketId, approverUserId, comment) {
     trx.update(ticketRef, {
       status: STATUS.REJECTED,
       reviewedBy: approverUserId,
-      reviewComment: comment || "",
+      reviewComment: safeComment,
       reviewedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
@@ -396,6 +410,7 @@ async function rejectTicket(ticketId, approverUserId, comment) {
 }
 
 async function returnToCreator(ticketId, approverUserId, comment) {
+  const safeComment = normalizeReviewComment(comment);
   const ticketRef = db.collection("tickets").doc(ticketId);
   await db.runTransaction(async (trx) => {
     const ticketDoc = await trx.get(ticketRef);
@@ -417,7 +432,7 @@ async function returnToCreator(ticketId, approverUserId, comment) {
 
     trx.update(ticketRef, {
       status: STATUS.PENDING_CORRECTION,
-      correctionComment: comment || "",
+      correctionComment: safeComment,
       correctionSentBy: approverUserId,
       correctionSentAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -437,7 +452,8 @@ async function markNotified(ticketId) {
 async function markNotificationError(ticketId, errorMessage) {
   await db.collection("tickets").doc(ticketId).update({
     notificationStatus: "ERROR",
-    notificationError: errorMessage,
+    notificationError: "No se pudo enviar la notificación.",
+    notificationErrorType: errorMessage ? "PROVIDER_ERROR" : "UNKNOWN_ERROR",
     updatedAt: FieldValue.serverTimestamp(),
   });
 }

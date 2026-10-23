@@ -1,5 +1,10 @@
 const {admin} = require("../config/firebase");
 const {logger} = require("./observability.service");
+const {
+  normalizeInventoryBaseUrl,
+  encodeInventoryPathSegment,
+  mayUseInventoryServiceCredential,
+} = require("./inventory-request.service");
 
 const HTTP_TIMEOUT_MS = Number(process.env.INVENTORY_HTTP_TIMEOUT_MS || 15000);
 const INVENTORY_SERVICE_UID = process.env.INVENTORY_SERVICE_UID || "inventory-service";
@@ -14,10 +19,7 @@ function inventoryUnavailableError() {
 }
 
 function getInventoryBaseUrl() {
-  const fallbackUrl = "https://cielitohome-storage-backend.onrender.com/api";
-  const configured = (process.env.INVENTORY_API_BASE_URL || "").trim();
-  const url = configured || fallbackUrl;
-  return url.replace(/\/$/, "");
+  return normalizeInventoryBaseUrl(process.env.INVENTORY_API_BASE_URL);
 }
 
 let cachedToken = null;
@@ -109,7 +111,14 @@ async function getServiceToken({forceRefreshStatic = false} = {}) {
   return cachedToken;
 }
 
-async function callInventoryApi({path, method = "GET", body, clientToken, _retryCount = 0}) {
+async function callInventoryApi({
+  path,
+  method = "GET",
+  body,
+  clientToken,
+  allowServiceFallback = false,
+  _retryCount = 0,
+}) {
   const baseUrl = getInventoryBaseUrl();
   const url = `${baseUrl}${path}`;
 
@@ -157,7 +166,7 @@ async function callInventoryApi({path, method = "GET", body, clientToken, _retry
       if (method === "GET" && isTransientError(clientAttempt.response.status) && _retryCount < 2) {
         logger.warn("Error transitorio de inventario; se reintentara", {eventType: "INVENTORY_RETRY", module: "inventory", statusCode: clientAttempt.response.status, route: path, metadata: {attempt: _retryCount + 1}});
         await new Promise((r) => setTimeout(r, 1000 * (_retryCount + 1)));
-        return callInventoryApi({path, method, body, clientToken, _retryCount: _retryCount + 1});
+        return callInventoryApi({path, method, body, clientToken, allowServiceFallback, _retryCount: _retryCount + 1});
       }
       const message = normalizeMessage(clientAttempt.payload, clientAttempt.response.status);
       logger.error("La API de inventario rechazo una solicitud", {eventType: "INVENTORY_REQUEST_FAILED", module: "inventory", statusCode: clientAttempt.response.status, route: path});
@@ -165,6 +174,12 @@ async function callInventoryApi({path, method = "GET", body, clientToken, _retry
         throw inventoryUnavailableError();
       }
       throw new Error(`La API de inventario rechazo la operacion (HTTP ${clientAttempt.response.status}).`);
+    }
+    if (!mayUseInventoryServiceCredential(clientToken, allowServiceFallback)) {
+      const error = new Error("El sistema de inventarios rechazó el acceso del usuario.");
+      error.statusCode = 403;
+      error.code = "INVENTORY_ACCESS_DENIED";
+      throw error;
     }
     logger.warn("Token de usuario rechazado por inventario; se usara la cuenta de servicio", {eventType: "INVENTORY_CLIENT_TOKEN_REJECTED", module: "inventory", statusCode: clientAttempt.response.status, route: path});
   }
@@ -201,8 +216,14 @@ async function callInventoryApi({path, method = "GET", body, clientToken, _retry
   return fallbackAttempt.payload;
 }
 
-async function getProductById(productId, clientToken) {
-  return callInventoryApi({path: `/productos/${productId}`, method: "GET", clientToken});
+async function getProductById(productId, clientToken, options = {}) {
+  const safeProductId = encodeInventoryPathSegment(productId, "productId");
+  return callInventoryApi({
+    path: `/productos/${safeProductId}`,
+    method: "GET",
+    clientToken,
+    allowServiceFallback: options.allowServiceFallback === true,
+  });
 }
 
 function normalizeArea(area) {
@@ -213,9 +234,10 @@ function normalizeArea(area) {
       .replace(/[\u0300-\u036f]/g, "");
 }
 
-async function getProductsByArea(area, clientToken) {
+async function getProductsByArea(area, clientToken, options = {}) {
+  const allowServiceFallback = options.allowServiceFallback === true;
   if (!area) {
-    return callInventoryApi({path: "/productos", method: "GET", clientToken});
+    return callInventoryApi({path: "/productos", method: "GET", clientToken, allowServiceFallback});
   }
 
   const rawArea = String(area).trim();
@@ -232,6 +254,7 @@ async function getProductsByArea(area, clientToken) {
         path: `/productos?area=${encodeURIComponent(candidate)}`,
         method: "GET",
         clientToken,
+        allowServiceFallback,
       });
     } catch (error) {
       if (error.statusCode >= 500 || error.code === "INVENTORY_UNAVAILABLE") {
@@ -284,7 +307,7 @@ function extractProductsArray(payload) {
   return [];
 }
 
-async function getAvailableAreas(clientToken) {
+async function getAvailableAreas(clientToken, options = {}) {
   const now = Date.now();
   const tokenKey = clientToken ? String(clientToken).slice(-20) : 'service';
 
@@ -292,7 +315,12 @@ async function getAvailableAreas(clientToken) {
     return cachedAreas[tokenKey].areas;
   }
 
-  const payload = await callInventoryApi({path: "/productos", method: "GET", clientToken});
+  const payload = await callInventoryApi({
+    path: "/productos",
+    method: "GET",
+    clientToken,
+    allowServiceFallback: options.allowServiceFallback === true,
+  });
   const products = extractProductsArray(payload);
 
   const areaSet = new Set();
@@ -321,22 +349,26 @@ async function getAvailableAreas(clientToken) {
 }
 
 async function discountProduct(productId, qty, reason, clientToken) {
+  const safeProductId = encodeInventoryPathSegment(productId, "productId");
   const body = {cantidad: qty};
   if (reason) body.motivo = reason;
   return callInventoryApi({
-    path: `/productos/${productId}/descontar`,
+    path: `/productos/${safeProductId}/descontar`,
     method: "POST",
     body,
     clientToken,
+    allowServiceFallback: true,
   });
 }
 
 async function reingressProduct(productId, qty, reason, clientToken) {
+  const safeProductId = encodeInventoryPathSegment(productId, "productId");
   return callInventoryApi({
-    path: `/productos/${productId}/reingreso`,
+    path: `/productos/${safeProductId}/reingreso`,
     method: "POST",
     body: {cantidad: qty, motivo: reason || "Reingreso por ticket"},
     clientToken,
+    allowServiceFallback: true,
   });
 }
 

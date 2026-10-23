@@ -22,6 +22,7 @@ const {addAuditEntry} = require("../services/audit.service");
 const {generatePdf, generateWord} = require("../services/document.service");
 const {getEmailConfig} = require("../services/user.service");
 const {canAccessTicket} = require("../services/ticket-integrity.service");
+const {canAccessArea} = require("../services/area-access.service");
 const {logger} = require("../services/observability.service");
 
 function respondError(req, res, error, fallbackStatus = 500) {
@@ -150,9 +151,24 @@ const ticketController = {
   // POST /api/tickets/:id/send-review
   sendToReview: async (req, res) => {
     try {
-      await sendToReview(req.params.id, req.user.id, req.authToken);
-      await addAuditEntry(req.params.id, "TICKET_SENT_TO_REVIEW", req.user.id);
-      return res.json({ok: true, ticketId: req.params.id, status: "EN_REVISION"});
+      const ticket = await getTicket(req.params.id);
+      if (!ticket) {
+        return res.status(404).json({error: "Ticket no encontrado", requestId: req.id});
+      }
+      if (!canAccessTicket(ticket, req.user)) {
+        return res.status(403).json({error: "No tienes permiso para enviar este ticket a revisión", requestId: req.id});
+      }
+      if (!canAccessArea(req.user, ticket.metadata?.area)) {
+        return res.status(403).json({
+          error: "Ya no tienes permiso para operar en el área de este ticket.",
+          code: "AREA_FORBIDDEN",
+          requestId: req.id,
+        });
+      }
+
+      await sendToReview(ticket.id, req.user.id, req.authToken);
+      await addAuditEntry(ticket.id, "TICKET_SENT_TO_REVIEW", req.user.id);
+      return res.json({ok: true, ticketId: ticket.id, status: "EN_REVISION"});
     } catch (error) {
       return respondError(req, res, error);
     }
@@ -227,7 +243,7 @@ const ticketController = {
       } catch (notificationError) {
         await markNotificationError(ticketId, notificationError.message);
         await addAuditEntry(ticketId, "NOTIFICATION_ERROR", req.user.id, {
-          error: notificationError.message,
+          errorType: notificationError.code || notificationError.name || "NOTIFICATION_ERROR",
         });
 
         return res.status(207).json({
@@ -359,7 +375,7 @@ const ticketController = {
             }),
           });
           await markNotified(ticketId);
-          await addAuditEntry(ticketId, "TICKET_NOTIFIED", req.user.id, {recipients: allRecipients});
+          await addAuditEntry(ticketId, "TICKET_NOTIFIED", req.user.id, {recipientCount: allRecipients.length});
         }
       } catch (notifErr) {
         logger.warn("Fallo la notificacion de un ticket aprobado", {eventType: "NOTIFICATION_ERROR", module: "notifications", requestId: req.id, correlationId: req.correlationId, ticketId}, notifErr);

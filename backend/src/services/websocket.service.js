@@ -7,6 +7,7 @@
 const {metricsStore} = require("./metrics.service");
 const {admin, db} = require("../config/firebase");
 const {SUPERADMIN_EMAIL} = require("../middleware/authorization");
+const {logger} = require("./observability.service");
 
 /**
  * Container for all active WebSocket connections.
@@ -25,11 +26,11 @@ async function validateWsToken(token) {
     if (process.env.NODE_ENV === "production" || process.env.ALLOW_DEV_TOKENS !== "true") {
       return null;
     }
-    return {id: "dev-user", email: "dev@localhost", role: "admin"};
+    return {id: "dev-user", email: "dev@localhost", role: "admin", expiresAt: Date.now() + 60 * 60 * 1000};
   }
 
   try {
-    const decoded = await admin.auth().verifyIdToken(token);
+    const decoded = await admin.auth().verifyIdToken(token, true);
     const email = (decoded.email || "").toLowerCase().trim();
     let role = SUPERADMIN_EMAIL && email === SUPERADMIN_EMAIL ? "superadmin" : null;
     if (!role) {
@@ -44,6 +45,7 @@ async function validateWsToken(token) {
       id: decoded.uid,
       email,
       role,
+      expiresAt: decoded.exp ? Number(decoded.exp) * 1000 : Date.now() + 60 * 60 * 1000,
     };
   } catch {
     return null;
@@ -65,6 +67,8 @@ async function validateWsToken(token) {
 function initMetricsWebSocket(server, WebSocket) {
   const wss = new WebSocket.Server({
     noServer: true,
+    maxPayload: 64 * 1024,
+    perMessageDeflate: false,
   });
 
   /**
@@ -99,11 +103,19 @@ function initMetricsWebSocket(server, WebSocket) {
    */
   wss.on("connection", (ws, request) => {
     const wsUser = request.wsUser || {id: "unknown"};
-    console.log(
-      "[WebSocket] Client connected — user:",
-      wsUser.email || wsUser.id
-    );
+    logger.info("Cliente WebSocket conectado", {
+      eventType: "WEBSOCKET_CONNECTED",
+      module: "websocket",
+      metadata: {user: wsUser.email || wsUser.id},
+    });
     activeConnections.add(ws);
+
+    const maximumSessionMs = 60 * 60 * 1000;
+    const remainingTokenMs = wsUser.expiresAt ? wsUser.expiresAt - Date.now() : maximumSessionMs;
+    const sessionTimer = setTimeout(() => {
+      ws.close(4001, "Authentication expired");
+    }, Math.max(1, Math.min(maximumSessionMs, remainingTokenMs)));
+    sessionTimer.unref?.();
 
     const userId = wsUser.id;
     metricsStore.registerSession(ws, userId);
@@ -147,7 +159,11 @@ function initMetricsWebSocket(server, WebSocket) {
      * Handle connection close.
      */
     ws.on("close", () => {
-      console.log("[WebSocket] Client disconnected");
+      clearTimeout(sessionTimer);
+      logger.info("Cliente WebSocket desconectado", {
+        eventType: "WEBSOCKET_DISCONNECTED",
+        module: "websocket",
+      });
       activeConnections.delete(ws);
       metricsStore.unregisterSession(userId);
     });
@@ -156,7 +172,7 @@ function initMetricsWebSocket(server, WebSocket) {
      * Handle connection errors.
      */
     ws.on("error", (err) => {
-      console.error("[WebSocket] Error:", err.message);
+      logger.warn("Error de WebSocket", {eventType: "WEBSOCKET_ERROR", module: "websocket"}, err);
     });
   });
 

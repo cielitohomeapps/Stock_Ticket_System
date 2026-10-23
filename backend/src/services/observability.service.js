@@ -9,9 +9,16 @@ function maskEmail(value) {
   );
 }
 
+function redactSecrets(value) {
+  return String(value)
+      .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+      .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]")
+      .replace(/-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----/g, "[REDACTED_PRIVATE_KEY]");
+}
+
 function sanitize(value, depth = 0) {
   if (value == null || typeof value === "boolean" || typeof value === "number") return value;
-  if (typeof value === "string") return maskEmail(value.slice(0, 1000));
+  if (typeof value === "string") return maskEmail(redactSecrets(value).slice(0, 1000));
   if (depth >= 5) return "[TRUNCATED]";
   if (Array.isArray(value)) return value.slice(0, 50).map((item) => sanitize(item, depth + 1));
   if (typeof value === "object") {
@@ -56,4 +63,4 @@ const logger = {
   fatal: (message, context, error) => emit("FATAL", message, context, error),
 };
 
-module.exports = {logger, sanitize, maskEmail};
+module.exports = {logger, sanitize, maskEmail, redactSecrets};

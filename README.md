@@ -98,6 +98,12 @@ El panel “Monitoreo” consume REST autenticado cada 15 segundos. Muestra esta
 Consulta [AUDIT_AND_MONITORING.md](AUDIT_AND_MONITORING.md) para el diagnóstico, las decisiones implementadas, los umbrales y las limitaciones operativas.
 Consulta [MOVEMENT_FLOW_AUDIT.md](MOVEMENT_FLOW_AUDIT.md) para el análisis de integridad, los estados de movimiento, los límites transaccionales, la recuperación de resultados inciertos y los pasos operativos.
 
+## Seguridad
+
+- [Auditoría integral de seguridad](docs/security/AUDITORIA_SEGURIDAD.md)
+- [Plan de remediación](docs/security/PLAN_REMEDIACION.md)
+- [Resultados de pruebas de seguridad](docs/security/RESULTADOS_PRUEBAS_SEGURIDAD.md)
+
 ## Índices de Firestore
 
 Los índices requeridos están declarados en `firestore.indexes.json`. Deben desplegarse en el proyecto que contiene la base de tickets:

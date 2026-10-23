@@ -9,7 +9,7 @@
 
 require("dotenv").config();
 
-const INVENTORY_API_BASE = (process.env.INVENTORY_API_BASE_URL || "https://cielitohome-storage-backend.onrender.com/api").replace(/\/$/, "");
+const INVENTORY_API_BASE = (process.env.INVENTORY_API_BASE_URL || "").replace(/\/$/, "");
 
 const HTTP_TIMEOUT_MS = 10000;
 
@@ -43,6 +43,14 @@ async function fetchWithTimeout(url, options = {}) {
 }
 
 async function testEndpointInfo() {
+  if (!INVENTORY_API_BASE) {
+    throw new Error("INVENTORY_API_BASE_URL must be configured explicitly.");
+  }
+  const target = new URL(INVENTORY_API_BASE);
+  const isLocal = ["localhost", "127.0.0.1", "::1"].includes(target.hostname);
+  if (!isLocal && process.env.ALLOW_EXTERNAL_DIAGNOSTICS !== "true") {
+    throw new Error("Refusing to probe a non-local inventory API without ALLOW_EXTERNAL_DIAGNOSTICS=true.");
+  }
   console.log("\n" + "=".repeat(80));
   console.log("INVENTORY API ENDPOINT ANALYSIS");
   console.log("=".repeat(80));
@@ -54,15 +62,7 @@ async function testEndpointInfo() {
     { method: "GET", path: "/", name: "Root endpoint" },
     { method: "GET", path: "/productos", name: "List all products" },
     { method: "GET", path: "/productos", name: "Products list", params: "?limit=1" },
-    { method: "POST", path: "/productos/test-id/descontar", name: "Discount (POST)" },
-    { method: "PUT", path: "/productos/test-id/descontar", name: "Discount (PUT)" },
-    { method: "PATCH", path: "/productos/test-id/descontar", name: "Discount (PATCH)" },
-    { method: "POST", path: "/productos/test-id/stock/decrease", name: "Stock decrease (alt)" },
-    { method: "POST", path: "/productos/test-id/salida", name: "Salida endpoint" },
-    { method: "POST", path: "/productos/test-id/reingreso", name: "Reingreso" },
-    { method: "POST", path: "/stock/descontar", name: "Stock descontar (root level)" },
     { method: "GET", path: "/health", name: "Health check" },
-    { method: "POST", path: "/auth", name: "Auth endpoint" },
   ];
 
   for (const ep of endpoints) {
@@ -71,7 +71,6 @@ async function testEndpointInfo() {
       const { response, payload } = await fetchWithTimeout(url, {
         method: ep.method,
         headers: { "Content-Type": "application/json" },
-        body: ep.method !== "GET" ? JSON.stringify({ cantidad: 1 }) : undefined,
       });
 
       const statusEmoji =

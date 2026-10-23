@@ -16,6 +16,7 @@ import type {
   TicketTableRow,
   CSVExportRow,
 } from '../types/analytics.types';
+import { escapeCsvCell } from '../utils/csvSecurity.js';
 
 let analyticsService: TicketAnalyticsService | null = null;
 
@@ -423,22 +424,20 @@ export class TicketAnalyticsService {
     ];
 
     const csvContent = [
-      headers.join(','),
-      ...rows.map((row) =>
-        [
-          `"${row.createdDate}"`,
-          row.type === 'EXIT' ? 'Salida' : 'Entrada',
-          `"${row.productsSummary}"`,
-          `"${row.area}"`,
-          `"${row.destino}"`,
-          `"${row.firma}"`,
-          statusLabels[row.status],
-          row.approvalTimeHours?.toString() || 'N/D',
-          `"${row.requestedBy}"`,
-          `"${row.productIds}"`,
-          `"${row.itemsList}"`,
-        ].join(',')
-      ),
+      headers.map(escapeCsvCell).join(','),
+      ...rows.map((row) => [
+        row.createdDate,
+        row.type === 'EXIT' ? 'Salida' : 'Entrada',
+        row.productsSummary,
+        row.area,
+        row.destino,
+        row.firma,
+        statusLabels[row.status],
+        row.approvalTimeHours?.toString() || 'N/D',
+        row.requestedBy,
+        row.productIds,
+        row.itemsList,
+      ].map(escapeCsvCell).join(',')),
     ].join('\n');
 
     return csvContent;

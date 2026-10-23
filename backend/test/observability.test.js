@@ -19,10 +19,11 @@ test("redacta secretos y enmascara correos antes de registrar contexto", () => {
 });
 
 test("preserva rutas grpc al sanitizar errores y enmascara correos del stack", () => {
-  const stack = "Error: FAILED_PRECONDITION at node_modules/@grpc/grpc-js/build/src/call.js:32:19 admin@example.com";
+  const stack = "Error: FAILED_PRECONDITION Bearer secret-value at node_modules/@grpc/grpc-js/build/src/call.js:32:19 admin@example.com";
   const result = sanitize(stack);
   assert.match(result, /@grpc\/grpc-js\/build\/src\/call\.js:32:19/);
   assert.match(result, /ad\*\*\*@example\.com/);
+  assert.doesNotMatch(result, /secret-value/);
 });
 
 test("filtra y pagina logs estructurados", () => {
